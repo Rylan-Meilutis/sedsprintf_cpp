@@ -97,10 +97,20 @@ TEST(CppWrapperTest, RouterExportsTopologyAndClearsNetworkState) {
     const auto topology = router.export_topology();
     ASSERT_FALSE(topology.routes.empty());
 
-    ASSERT_EQ(seds_router_set_local_network_datetime_millis(router.raw(), 2026, 3, 21, 12, 34, 56, 250), SEDS_OK);
+    seds::Router::TimeSyncOptions timesync{};
+    timesync.role = 1u;
+    timesync.priority = 1u;
+    timesync.source_timeout_ms = 1000u;
+    timesync.announce_interval_ms = 100u;
+    timesync.request_interval_ms = 100u;
+    ASSERT_EQ(router.configure_timesync(true, timesync), SEDS_OK);
+    ASSERT_EQ(router.announce_discovery(), SEDS_OK);
+    bool did_queue = false;
+    ASSERT_EQ(router.poll_discovery(&did_queue), SEDS_OK);
+    ASSERT_EQ(router.set_local_network_datetime_millis(2026, 3, 21, 12, 34, 56, 250), SEDS_OK);
     ASSERT_EQ(router.clear_local_network_time(), SEDS_OK);
     uint64_t now_ms = 0;
-    ASSERT_EQ(seds_router_get_network_time_ms(router.raw(), &now_ms), SEDS_ERR);
+    ASSERT_EQ(router.get_network_time_ms(now_ms), SEDS_ERR);
 }
 
 TEST(CppWrapperTest, RelayExportsTopologyAndSupportsSideOptions) {
@@ -118,6 +128,10 @@ TEST(CppWrapperTest, RelayExportsTopologyAndSupportsSideOptions) {
                                             sizeof(discovery_payload)));
     ASSERT_EQ(relay.receive_from_side(static_cast<uint32_t>(side_a), discovery), SEDS_OK);
     ASSERT_EQ(relay.process_all(), SEDS_OK);
+    ASSERT_EQ(relay.announce_discovery(), SEDS_OK);
+    bool did_queue = false;
+    ASSERT_EQ(relay.poll_discovery(&did_queue), SEDS_OK);
+    ASSERT_EQ(relay.periodic(0), SEDS_OK);
     const auto topology = relay.export_topology();
     ASSERT_FALSE(topology.routes.empty());
 }
@@ -178,6 +192,13 @@ TEST(CppWrapperTest, MirrorHeadersExposeExpectedGlue) {
     ASSERT_TRUE(rx_queue.empty());
 
     ASSERT_EQ(SEDS_OK, 0);
+}
+
+TEST(CppWrapperTest, DiscoveryHeaderReexportsHelpers) {
+    const std::array<uint32_t, 2> endpoints{SEDS_EP_SD_CARD, SEDS_EP_RADIO};
+    const auto pkt = seds::build_discovery_announce("DISC", 1, endpoints);
+    const auto decoded = seds::decode_discovery_announce(pkt);
+    ASSERT_EQ(decoded, (std::vector<uint32_t>{SEDS_EP_SD_CARD, SEDS_EP_RADIO}));
 }
 
 }  // namespace

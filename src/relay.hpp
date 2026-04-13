@@ -35,6 +35,9 @@ public:
 
     SedsResult receive_from_side(uint32_t side_id, const Packet& packet);
     SedsResult process_all();
+    SedsResult announce_discovery();
+    SedsResult poll_discovery(bool* out_did_queue = nullptr);
+    SedsResult periodic(uint32_t timeout_ms);
     [[nodiscard]] TopologySnapshot export_topology() const;
 
     [[nodiscard]] SedsRelay* raw() const { return relay_.get(); }

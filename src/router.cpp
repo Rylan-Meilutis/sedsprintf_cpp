@@ -76,8 +76,92 @@ SedsResult Router::process_all() {
     return seds_router_process_all_queues(router_.get());
 }
 
+SedsResult Router::periodic(uint32_t timeout_ms) {
+    return seds_router_periodic(router_.get(), timeout_ms);
+}
+
+SedsResult Router::periodic_no_timesync(uint32_t timeout_ms) {
+    return seds_router_periodic_no_timesync(router_.get(), timeout_ms);
+}
+
 SedsResult Router::set_sender(std::string_view sender) {
     return seds_router_set_sender(router_.get(), sender.data(), sender.size());
+}
+
+SedsResult Router::get_network_time_ms(uint64_t& out_ms) const {
+    return seds_router_get_network_time_ms(router_.get(), &out_ms);
+}
+
+SedsResult Router::get_network_time(SedsNetworkTime& out) const {
+    return seds_router_get_network_time(router_.get(), &out);
+}
+
+SedsResult Router::configure_timesync(bool enabled) {
+    return configure_timesync(enabled, TimeSyncOptions{});
+}
+
+SedsResult Router::configure_timesync(bool enabled, const TimeSyncOptions& options) {
+    return seds_router_configure_timesync(router_.get(), enabled, options.role, options.priority,
+                                          options.source_timeout_ms, options.announce_interval_ms,
+                                          options.request_interval_ms);
+}
+
+SedsResult Router::poll_timesync(bool* out_did_queue) {
+    return seds_router_poll_timesync(router_.get(), out_did_queue);
+}
+
+SedsResult Router::announce_discovery() {
+    return seds_router_announce_discovery(router_.get());
+}
+
+SedsResult Router::poll_discovery(bool* out_did_queue) {
+    return seds_router_poll_discovery(router_.get(), out_did_queue);
+}
+
+SedsResult Router::set_local_network_time(const SedsNetworkTime& time) {
+    return seds_router_set_local_network_time(
+        router_.get(), time.has_year, time.year, time.has_month, time.month, time.has_day, time.day,
+        time.has_hour, time.hour, time.has_minute, time.minute, time.has_second, time.second,
+        time.has_nanosecond, time.nanosecond);
+}
+
+SedsResult Router::set_local_network_date(int32_t year, uint8_t month, uint8_t day) {
+    return seds_router_set_local_network_date(router_.get(), year, month, day);
+}
+
+SedsResult Router::set_local_network_time_hm(uint8_t hour, uint8_t minute) {
+    return seds_router_set_local_network_time_hm(router_.get(), hour, minute);
+}
+
+SedsResult Router::set_local_network_time_hms(uint8_t hour, uint8_t minute, uint8_t second) {
+    return seds_router_set_local_network_time_hms(router_.get(), hour, minute, second);
+}
+
+SedsResult Router::set_local_network_time_hms_millis(uint8_t hour, uint8_t minute, uint8_t second,
+                                                     uint16_t millisecond) {
+    return seds_router_set_local_network_time_hms_millis(router_.get(), hour, minute, second, millisecond);
+}
+
+SedsResult Router::set_local_network_time_hms_nanos(uint8_t hour, uint8_t minute, uint8_t second,
+                                                    uint32_t nanosecond) {
+    return seds_router_set_local_network_time_hms_nanos(router_.get(), hour, minute, second, nanosecond);
+}
+
+SedsResult Router::set_local_network_datetime(int32_t year, uint8_t month, uint8_t day, uint8_t hour,
+                                              uint8_t minute, uint8_t second) {
+    return seds_router_set_local_network_datetime(router_.get(), year, month, day, hour, minute, second);
+}
+
+SedsResult Router::set_local_network_datetime_millis(int32_t year, uint8_t month, uint8_t day, uint8_t hour,
+                                                     uint8_t minute, uint8_t second, uint16_t millisecond) {
+    return seds_router_set_local_network_datetime_millis(router_.get(), year, month, day, hour, minute, second,
+                                                         millisecond);
+}
+
+SedsResult Router::set_local_network_datetime_nanos(int32_t year, uint8_t month, uint8_t day, uint8_t hour,
+                                                    uint8_t minute, uint8_t second, uint32_t nanosecond) {
+    return seds_router_set_local_network_datetime_nanos(router_.get(), year, month, day, hour, minute, second,
+                                                        nanosecond);
 }
 
 SedsResult Router::clear_local_network_time() {

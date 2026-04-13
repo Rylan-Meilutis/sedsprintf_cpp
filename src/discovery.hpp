@@ -1,5 +1,7 @@
 #pragma once
 
+#include "discovery_helpers.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>

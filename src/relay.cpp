@@ -68,6 +68,18 @@ SedsResult Relay::process_all() {
     return seds_relay_process_all_queues(relay_.get());
 }
 
+SedsResult Relay::announce_discovery() {
+    return seds_relay_announce_discovery(relay_.get());
+}
+
+SedsResult Relay::poll_discovery(bool* out_did_queue) {
+    return seds_relay_poll_discovery(relay_.get(), out_did_queue);
+}
+
+SedsResult Relay::periodic(uint32_t timeout_ms) {
+    return seds_relay_periodic(relay_.get(), timeout_ms);
+}
+
 TopologySnapshot Relay::export_topology() const {
     const auto* raw_relay = static_cast<const SedsRelay*>(relay_.get());
     const uint64_t now_ms = raw_relay->now_ms();
