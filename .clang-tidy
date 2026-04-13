@@ -1,0 +1,150 @@
+---
+# Project-tuned clang-tidy configuration.
+# Keep high-signal correctness / safety checks on by default and avoid
+# style churn already handled by formatting or intentionally suppressed
+# in the JetBrains inspection profile.
+
+Checks: >-
+  -*,
+  bugprone-*,
+  cert-dcl21-cpp,
+  cert-dcl58-cpp,
+  cert-err34-c,
+  cert-err52-cpp,
+  cert-err60-cpp,
+  cert-flp30-c,
+  cert-msc50-cpp,
+  cert-msc51-cpp,
+  cert-str34-c,
+  cppcoreguidelines-interfaces-global-init,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-slicing,
+  hicpp-exception-baseclass,
+  hicpp-multiway-paths-covered,
+  misc-misplaced-const,
+  misc-new-delete-overloads,
+  misc-non-copyable-objects,
+  misc-throw-by-value-catch-by-reference,
+  misc-unconventional-assign-operator,
+  misc-uniqueptr-reset-release,
+  modernize-avoid-bind,
+  modernize-concat-nested-namespaces,
+  modernize-deprecated-headers,
+  modernize-loop-convert,
+  modernize-make-shared,
+  modernize-make-unique,
+  modernize-pass-by-value,
+  modernize-raw-string-literal,
+  modernize-redundant-void-arg,
+  modernize-replace-auto-ptr,
+  modernize-replace-disallow-copy-and-assign-macro,
+  modernize-replace-random-shuffle,
+  modernize-return-braced-init-list,
+  modernize-shrink-to-fit,
+  modernize-unary-static-assert,
+  modernize-use-auto,
+  modernize-use-bool-literals,
+  modernize-use-emplace,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-use-nodiscard,
+  modernize-use-noexcept,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-transparent-functors,
+  modernize-use-uncaught-exceptions,
+  performance-*,
+  -performance-noexcept-move-constructor,
+  portability-simd-intrinsics,
+  readability-avoid-const-params-in-decls,
+  readability-container-size-empty,
+  readability-delete-null-pointer,
+  readability-deleted-default,
+  readability-inconsistent-declaration-parameter-name,
+  readability-make-member-function-const,
+  readability-misleading-indentation,
+  readability-misplaced-array-index,
+  readability-redundant-control-flow,
+  readability-redundant-declaration,
+  readability-redundant-function-ptr-dereference,
+  readability-redundant-smartptr-get,
+  readability-redundant-string-cstr,
+  readability-redundant-string-init,
+  readability-simplify-subscript-expr,
+  readability-static-accessed-through-instance,
+  readability-static-definition-in-anonymous-namespace,
+  readability-string-compare,
+  readability-uniqueptr-delete-release,
+  readability-use-anyofallof,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-exception-escape,
+  -bugprone-reserved-identifier,
+  -bugprone-suspicious-include,
+  -bugprone-unchecked-optional-access,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-owning-memory,
+  -modernize-pass-by-value,
+  -modernize-use-trailing-return-type,
+  -performance-avoid-endl,
+  -performance-unnecessary-value-param,
+  -readability-convert-member-functions-to-static,
+  -readability-const-return-type,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-magic-numbers,
+  -readability-named-parameter,
+  -readability-non-const-parameter,
+  -readability-qualified-auto,
+  -readability-redundant-access-specifiers
+
+CheckOptions:
+  - key: bugprone-argument-comment.StrictMode
+    value: "true"
+  - key: bugprone-macro-parentheses.IgnoreCommandLineMacros
+    value: "true"
+  - key: bugprone-narrowing-conversions.WarnOnIntegerNarrowingConversion
+    value: "true"
+  - key: cppcoreguidelines-narrowing-conversions.WarnOnIntegerNarrowingConversion
+    value: "true"
+  - key: cppcoreguidelines-pro-type-member-init.UseAssignment
+    value: "false"
+  - key: modernize-loop-convert.MinConfidence
+    value: reasonable
+  - key: modernize-make-shared.IgnoreDefaultInitialization
+    value: "true"
+  - key: modernize-make-unique.IgnoreDefaultInitialization
+    value: "true"
+  - key: modernize-use-auto.MinTypeNameLength
+    value: "8"
+  - key: modernize-use-nullptr.NullMacros
+    value: 'NULL'
+  - key: performance-for-range-copy.WarnOnAllAutoCopies
+    value: "false"
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+
+HeaderFilterRegex: '^(./)?(src|tests|sedsprintf\.h)(/|$)'
+ExcludeHeaderFilterRegex: '(^|/)(build|generated|generated_overlay|inspection|third_party)/'
+FormatStyle: file
+SystemHeaders: false
+UseColor: true

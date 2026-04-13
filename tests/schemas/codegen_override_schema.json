@@ -1,0 +1,26 @@
+{
+  "endpoints": [
+    {
+      "rust": "Radio",
+      "name": "RADIO",
+      "doc": "Radio endpoint."
+    }
+  ],
+  "types": [
+    {
+      "rust": "CustomData",
+      "name": "CUSTOM_DATA",
+      "doc": "Custom payload.",
+      "class": "Data",
+      "element": {
+        "kind": "Static",
+        "data_type": "UInt8",
+        "count": 4
+      },
+      "endpoints": [
+        "Radio"
+      ]
+    }
+  ]
+}
+

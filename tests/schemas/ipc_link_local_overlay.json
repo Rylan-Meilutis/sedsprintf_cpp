@@ -1,0 +1,25 @@
+{
+  "endpoints": [
+    {
+      "rust": "BoardLocal",
+      "name": "BOARD_LOCAL",
+      "doc": "Board-local endpoint."
+    }
+  ],
+  "types": [
+    {
+      "rust": "BoardLocalFrame",
+      "name": "BOARD_LOCAL_FRAME",
+      "doc": "Board-local payload.",
+      "class": "Warning",
+      "element": {
+        "kind": "Dynamic",
+        "data_type": "Binary"
+      },
+      "endpoints": [
+        "BoardLocal"
+      ]
+    }
+  ]
+}
+
