@@ -5,11 +5,17 @@
 Discovery packets advertise:
 - reachable endpoints
 - reachable time sync source identifiers
+- full board-topology graphs via `DISCOVERY_TOPOLOGY`
 
 Discovery is used to:
 - avoid blind flooding when a route is known
 - export topology snapshots
 - constrain link-local traffic to link-local-enabled sides
+
+Exported topology snapshots now include:
+- top-level `routers` graph data
+- per-side `announcers` that attribute learned reachability to upstream senders
+- announce cadence state for inspection
 
 Relevant files:
 - `src/discovery.hpp`

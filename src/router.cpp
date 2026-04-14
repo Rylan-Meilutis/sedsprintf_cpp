@@ -184,58 +184,47 @@ SedsResult Router::clear_network_time_source(std::string_view source) {
     return SEDS_OK;
 }
 
-TopologySnapshot Router::export_topology() const {
-    const auto* raw_router = static_cast<const SedsRouter*>(router_.get());
-    const uint64_t now_ms = raw_router->now_ms();
-    std::scoped_lock lock(raw_router->mu);
+TopologySnapshot export_topology_snapshot(const SedsRouter& raw_router_ref) {
+    auto& raw_router = const_cast<SedsRouter&>(raw_router_ref);
+    const uint64_t now_ms = raw_router.now_ms();
+    std::scoped_lock lock(raw_router.mu);
     TopologySnapshot snapshot;
-    for (uint32_t ep = 0; ep < kEndpointCount; ++ep) {
-        bool advertise = false;
-        for (const auto& local : raw_router->locals) {
-            if (local.endpoint == ep) {
-                advertise = true;
-                break;
-            }
-        }
-        if (advertise) {
-            snapshot.advertised_endpoints.push_back(ep);
-        }
-    }
-    if (raw_router->timesync.enabled) {
-        snapshot.advertised_endpoints.push_back(SEDS_EP_TIME_SYNC);
-    }
-    if (raw_router->timesync.has_network_time) {
-        snapshot.advertised_timesync_sources.push_back(raw_router->timesync.current_source.empty() ? "local" : raw_router->timesync.current_source);
-    }
-    for (const auto& [side_id, route] : raw_router->discovery_routes) {
+    for (const auto& [side_id, route] : raw_router.discovery_routes) {
         if (now_ms - route.last_seen_ms > kDiscoveryTtlMs) {
             continue;
         }
         TopologySideRoute item;
         item.side_id = static_cast<size_t>(side_id);
-        if (side_id >= 0 && static_cast<size_t>(side_id) < raw_router->sides.size()) {
-            item.side_name = raw_router->sides[side_id].name;
+        if (side_id >= 0 && static_cast<size_t>(side_id) < raw_router.sides.size()) {
+            item.side_name = raw_router.sides[side_id].name;
         }
         item.reachable_endpoints.assign(route.endpoints.begin(), route.endpoints.end());
         item.reachable_timesync_sources.assign(route.timesync_sources.begin(), route.timesync_sources.end());
+        for (const auto& [sender_id, sender_state] : route.announcers) {
+            TopologyAnnouncerRoute announcer;
+            announcer.sender_id = sender_id;
+            announcer.reachable_endpoints.assign(sender_state.endpoints.begin(), sender_state.endpoints.end());
+            announcer.reachable_timesync_sources.assign(sender_state.timesync_sources.begin(),
+                                                        sender_state.timesync_sources.end());
+            announcer.routers = sender_state.topology_boards;
+            announcer.last_seen_ms = sender_state.last_seen_ms;
+            announcer.age_ms = now_ms - sender_state.last_seen_ms;
+            item.announcers.push_back(std::move(announcer));
+        }
         item.last_seen_ms = route.last_seen_ms;
         item.age_ms = now_ms - route.last_seen_ms;
         snapshot.routes.push_back(std::move(item));
-        snapshot.advertised_endpoints.insert(snapshot.advertised_endpoints.end(), route.endpoints.begin(), route.endpoints.end());
-        snapshot.advertised_timesync_sources.insert(snapshot.advertised_timesync_sources.end(),
-                                                    route.timesync_sources.begin(), route.timesync_sources.end());
     }
-    std::ranges::sort(snapshot.advertised_endpoints);
-    snapshot.advertised_endpoints.erase(
-        std::ranges::unique(snapshot.advertised_endpoints).begin(),
-        snapshot.advertised_endpoints.end());
-    std::ranges::sort(snapshot.advertised_timesync_sources);
-    snapshot.advertised_timesync_sources.erase(
-        std::ranges::unique(snapshot.advertised_timesync_sources).begin(),
-        snapshot.advertised_timesync_sources.end());
-    snapshot.current_announce_interval_ms = raw_router->discovery_interval_ms;
-    snapshot.next_announce_ms = raw_router->discovery_next_ms;
+    snapshot.routers = advertised_discovery_topology_for_side(raw_router, -1);
+    std::tie(snapshot.advertised_endpoints, snapshot.advertised_timesync_sources) =
+        summarize_topology_boards(snapshot.routers);
+    snapshot.current_announce_interval_ms = raw_router.discovery_interval_ms;
+    snapshot.next_announce_ms = raw_router.discovery_next_ms;
     return snapshot;
+}
+
+TopologySnapshot Router::export_topology() const {
+    return export_topology_snapshot(*router_);
 }
 
 }  // namespace seds

@@ -1,5 +1,6 @@
 #include "sedsprintf.h"
 #include "src/internal.hpp"
+#include "src/router.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1238,6 +1239,43 @@ void test_error_enum_code_roundtrip_and_strings() {
   }
 }
 
+void test_c_abi_topology_export_matches_topology_snapshot_shape() {
+  const auto router = make_router(Seds_RM_Sink);
+  ASSERT_NE(router, nullptr);
+  const int32_t side = seds_router_add_side_serialized(router.get(), "A", 1, capture_tx, nullptr, false);
+  ASSERT_GE(side, 0);
+
+  const std::vector<seds::TopologyBoardNode> topology = {
+      {"REMOTE_A", {SEDS_EP_SD_CARD}, {"SRC_A"}, {"SENSOR_B"}},
+      {"SENSOR_B", {SEDS_EP_RADIO}, {}, {"REMOTE_A"}},
+  };
+  const auto topology_pkt = seds::build_discovery_topology("REMOTE_A", 0, topology);
+  const auto view = topology_pkt.view();
+  ASSERT_EQ(seds_router_receive_from_side(router.get(), static_cast<uint32_t>(side), &view), SEDS_OK);
+
+  const int32_t needed = seds_router_export_topology_len(router.get());
+  ASSERT_GT(needed, 1);
+  std::vector<char> json(static_cast<size_t>(needed));
+  ASSERT_EQ(seds_router_export_topology(router.get(), json.data(), json.size()), SEDS_OK);
+  const std::string text(json.data());
+  ASSERT_NE(text.find("\"routers\":["), std::string::npos);
+  ASSERT_NE(text.find("\"announcers\":["), std::string::npos);
+  ASSERT_NE(text.find("\"sender_id\":\"SENSOR_B\""), std::string::npos);
+  ASSERT_NE(text.find("\"reachable_endpoints\":[1]"), std::string::npos);
+
+  const auto relay = make_relay();
+  ASSERT_NE(relay, nullptr);
+  const int32_t relay_side = seds_relay_add_side_serialized(relay.get(), "B", 1, capture_tx, nullptr, false);
+  ASSERT_GE(relay_side, 0);
+  ASSERT_EQ(seds_relay_rx_packet_from_side(relay.get(), static_cast<uint32_t>(relay_side), &view), SEDS_OK);
+  ASSERT_EQ(seds_relay_process_rx_queue(relay.get()), SEDS_OK);
+  const int32_t relay_needed = seds_relay_export_topology_len(relay.get());
+  ASSERT_GT(relay_needed, 1);
+  std::vector<char> relay_json(static_cast<size_t>(relay_needed));
+  ASSERT_EQ(seds_relay_export_topology(relay.get(), relay_json.data(), relay_json.size()), SEDS_OK);
+  ASSERT_NE(std::string(relay_json.data()).find("\"announcers\":["), std::string::npos);
+}
+
 void test_deserialize_header_only_short_buffer_fails() {
   const uint8_t tiny[] = {0x00u};
   const uint8_t truncated[] = {0x00u, 0x80u};
@@ -1924,13 +1962,15 @@ void test_queued_discovery_precedes_normal_telemetry() {
   ASSERT_EQ(seds_router_announce_discovery(router.get()), SEDS_OK);
   ASSERT_EQ(seds_router_process_tx_queue(router.get()), SEDS_OK);
 
-  ASSERT_EQ(tx.frames.size(), 2u);
-  const auto first = seds::deserialize_packet(tx.frames[0].data(), tx.frames[0].size());
-  auto second = seds::deserialize_packet(tx.frames[1].data(), tx.frames[1].size());
-  ASSERT_TRUE(first.has_value());
-  ASSERT_TRUE(second.has_value());
-  ASSERT_EQ(first->ty, SEDS_DT_DISCOVERY_ANNOUNCE);
-  ASSERT_EQ(second->ty, SEDS_DT_GPS_DATA);
+  ASSERT_EQ(tx.frames.size(), 3u);
+  for (size_t i = 0; i + 1 < tx.frames.size(); ++i) {
+    const auto pkt = seds::deserialize_packet(tx.frames[i].data(), tx.frames[i].size());
+    ASSERT_TRUE(pkt.has_value());
+    ASSERT_TRUE(seds::is_discovery_control_type(pkt->ty));
+  }
+  const auto last = seds::deserialize_packet(tx.frames.back().data(), tx.frames.back().size());
+  ASSERT_TRUE(last.has_value());
+  ASSERT_EQ(last->ty, SEDS_DT_GPS_DATA);
 }
 
 void test_relay_discovery_selective_fanout() {
@@ -3506,11 +3546,21 @@ void test_router_remove_side_updates_discovery_routes_and_announces_remaining_to
     ASSERT_TRUE(router->discovery_routes.contains(b));
   }
   ASSERT_TRUE(side_a.frames.empty());
-  ASSERT_EQ(side_b.frames.size(), 1u);
-  const auto pkt = seds::deserialize_packet(side_b.frames.front().data(), side_b.frames.front().size());
-  ASSERT_TRUE(pkt.has_value());
-  ASSERT_EQ(pkt->ty, SEDS_DT_DISCOVERY_ANNOUNCE);
-  ASSERT_EQ(decode_discovery_announce_payload(*pkt), (std::vector<uint32_t>{SEDS_EP_SD_CARD}));
+  ASSERT_EQ(side_b.frames.size(), 2u);
+  bool saw_announce = false;
+  bool saw_topology = false;
+  for (const auto& frame : side_b.frames) {
+    const auto pkt = seds::deserialize_packet(frame.data(), frame.size());
+    ASSERT_TRUE(pkt.has_value());
+    if (pkt->ty == SEDS_DT_DISCOVERY_ANNOUNCE) {
+      saw_announce = true;
+      ASSERT_EQ(decode_discovery_announce_payload(*pkt), (std::vector<uint32_t>{SEDS_EP_SD_CARD}));
+    } else if (pkt->ty == SEDS_DT_DISCOVERY_TOPOLOGY) {
+      saw_topology = true;
+    }
+  }
+  ASSERT_TRUE(saw_announce);
+  ASSERT_TRUE(saw_topology);
 }
 
 void test_relay_remove_side_updates_discovery_routes_and_announces_remaining_topology() {
@@ -3553,11 +3603,49 @@ void test_relay_remove_side_updates_discovery_routes_and_announces_remaining_top
     ASSERT_TRUE(relay->discovery_routes.contains(b));
   }
   ASSERT_TRUE(side_a.frames.empty());
-  ASSERT_EQ(side_b.frames.size(), 1u);
-  const auto pkt = seds::deserialize_packet(side_b.frames.front().data(), side_b.frames.front().size());
-  ASSERT_TRUE(pkt.has_value());
-  ASSERT_EQ(pkt->ty, SEDS_DT_DISCOVERY_ANNOUNCE);
-  ASSERT_EQ(decode_discovery_announce_payload(*pkt), (std::vector<uint32_t>{SEDS_EP_SD_CARD}));
+  ASSERT_EQ(side_b.frames.size(), 2u);
+  bool saw_announce = false;
+  bool saw_topology = false;
+  for (const auto& frame : side_b.frames) {
+    const auto pkt = seds::deserialize_packet(frame.data(), frame.size());
+    ASSERT_TRUE(pkt.has_value());
+    if (pkt->ty == SEDS_DT_DISCOVERY_ANNOUNCE) {
+      saw_announce = true;
+      ASSERT_EQ(decode_discovery_announce_payload(*pkt), (std::vector<uint32_t>{SEDS_EP_SD_CARD}));
+    } else if (pkt->ty == SEDS_DT_DISCOVERY_TOPOLOGY) {
+      saw_topology = true;
+    }
+  }
+  ASSERT_TRUE(saw_announce);
+  ASSERT_TRUE(saw_topology);
+}
+
+void test_router_exports_board_graph_and_tracks_transitive_endpoint_holders() {
+  seds::Router router;
+  const int32_t side_a =
+      router.add_side_serialized("A", [](std::span<const uint8_t>) { return SEDS_OK; }, false);
+  ASSERT_GE(side_a, 0);
+
+  const std::vector<seds::TopologyBoardNode> topology = {
+      {"REMOTE_A", {SEDS_EP_SD_CARD}, {}, {"SENSOR_B"}},
+      {"SENSOR_B", {SEDS_EP_RADIO}, {}, {"REMOTE_A"}},
+  };
+  const auto topology_pkt = seds::build_discovery_topology("REMOTE_A", 0, topology);
+  const auto view = topology_pkt.view();
+  ASSERT_EQ(seds_router_receive_from_side(router.raw(), static_cast<uint32_t>(side_a), &view), SEDS_OK);
+
+  const auto snap = router.export_topology();
+  ASSERT_EQ(snap.routes.size(), 1u);
+  ASSERT_EQ(snap.routes[0].announcers.size(), 1u);
+  ASSERT_EQ(snap.routes[0].announcers[0].sender_id, "REMOTE_A");
+  ASSERT_TRUE(std::ranges::any_of(snap.routes[0].announcers[0].routers, [](const auto& board) {
+    return board.sender_id == "SENSOR_B" && board.reachable_endpoints == std::vector<uint32_t>{SEDS_EP_RADIO};
+  }));
+  ASSERT_TRUE(std::ranges::any_of(snap.routers, [](const auto& board) {
+    return board.sender_id == "SENSOR_B" &&
+           std::ranges::find(board.connections, std::string("REMOTE_A")) != board.connections.end();
+  }));
+  ASSERT_TRUE(std::ranges::find(snap.advertised_endpoints, SEDS_EP_RADIO) != snap.advertised_endpoints.end());
 }
 
 void test_router_failover_route_mode_switches_when_preferred_path_expires() {
@@ -4526,6 +4614,9 @@ TEST(PacketTest, StringGetterTrimsTrailingNuls) { test_string_getter_trims_trail
 TEST(PacketTest, HeaderSizeIsPrefixOfWireImage) { test_header_size_is_prefix_of_wire_image(); }
 TEST(PacketTest, HexStringMatchesExpectation) { test_packet_hex_string_matches_expectation(); }
 TEST(PacketTest, ErrorEnumCodeRoundtripAndStrings) { test_error_enum_code_roundtrip_and_strings(); }
+TEST(PacketTest, CAbiTopologyExportMatchesTopologySnapshotShape) {
+  test_c_abi_topology_export_matches_topology_snapshot_shape();
+}
 TEST(PacketTest, DeserializeHeaderOnlyShortBufferFails) { test_deserialize_header_only_short_buffer_fails(); }
 TEST(PacketTest, DeserializeHeaderOnlyThenFullParseMatches) { test_deserialize_header_only_then_full_parse_matches(); }
 TEST(PacketTest, ValidateRejectsEmptyEndpointsAndSizeMismatch) {
@@ -4649,6 +4740,9 @@ TEST(RouterTest, RemoveSideStopsTransmitAndRejectsRemovedIngress) {
 }
 TEST(RouterTest, RemoveSideUpdatesDiscoveryRoutesAndAnnouncesRemainingTopology) {
   test_router_remove_side_updates_discovery_routes_and_announces_remaining_topology();
+}
+TEST(RouterTest, ExportsBoardGraphAndTracksTransitiveEndpointHolders) {
+  test_router_exports_board_graph_and_tracks_transitive_endpoint_holders();
 }
 TEST(RouterTest, RuntimeRoutesSupportAsymmetricAndIngressOnlyLinks) {
   test_router_runtime_routes_support_asymmetric_and_ingress_only_links();

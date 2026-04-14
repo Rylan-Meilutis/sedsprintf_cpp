@@ -15,7 +15,7 @@ Generated build artifacts live under `build/`.
 ## Features
 
 - Discovery:
-  learned reachable endpoints, adaptive announce cadence, selective forwarding, topology export
+  learned reachable endpoints, transitive topology graphs, adaptive announce cadence, selective forwarding, topology export
 - Time sync:
   announce/request/response packets, discovered source routing, local network-time setters
 - Reliable transport:
@@ -26,7 +26,7 @@ Generated build artifacts live under `build/`.
 Built-in control surfaces mirrored from the Rust runtime:
 - data types:
   `TIME_SYNC_ANNOUNCE`, `TIME_SYNC_REQUEST`, `TIME_SYNC_RESPONSE`, `DISCOVERY_ANNOUNCE`,
-  `DISCOVERY_TIMESYNC_SOURCES`, `TELEMETRY_ERROR`
+  `DISCOVERY_TIMESYNC_SOURCES`, `DISCOVERY_TOPOLOGY`, `TELEMETRY_ERROR`
 - endpoints:
   `TIME_SYNC`, `DISCOVERY`, `TELEMETRY_ERROR`
 - reliable modes:
@@ -63,4 +63,5 @@ That runs:
 ## Status
 
 Rust/Python interop layers are intentionally omitted here.
-The remaining parity work is primarily broader Rust test coverage and any still-unported higher-level helper surfaces.
+Discovery, topology export, and discovery-driven routing semantics are aligned with the Rust runtime.
+Remaining parity work is primarily non-C++ bindings/doc surfaces and broader regression coverage.

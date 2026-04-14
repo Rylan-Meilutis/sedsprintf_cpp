@@ -33,6 +33,8 @@ Current parity points mirrored from Rust:
 - side removal updates discovery state and routing behavior
 - typed routes still respect base-route disables
 - discovered routes participate in weighted/failover selection
+- `DISCOVERY_TOPOLOGY` propagates transitive board graphs
+- exported topology includes top-level `routers` plus per-side `announcers`
 
 Relevant files:
 - `src/router.hpp`

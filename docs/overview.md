@@ -7,7 +7,7 @@ Main responsibilities:
 - packet validation and string formatting
 - compact wire serialization with CRC and reliable headers
 - router / relay forwarding behavior
-- built-in discovery and time sync control traffic
+- built-in discovery and time sync control traffic, including topology export JSON through the C ABI
 
 Public entrypoints:
 - C ABI in `sedsprintf.h`

@@ -258,11 +258,20 @@ TEST(LinkLocalOverlayTest, DiscoveryHidesLinkLocalEndpointsFromNetworkSides) {
 
     ASSERT_EQ(seds_router_announce_discovery(router.get()), SEDS_OK);
     ASSERT_EQ(seds_router_process_tx_queue(router.get()), SEDS_OK);
-    ASSERT_EQ(net.packets.size(), 1u);
-    ASSERT_EQ(link_local.packets.size(), 1u);
+    ASSERT_EQ(net.packets.size(), 2u);
+    ASSERT_EQ(link_local.packets.size(), 2u);
 
-    const auto net_eps = decode_discovery_payload(net.packets.front());
-    const auto ll_eps = decode_discovery_payload(link_local.packets.front());
+    const auto net_it = std::find_if(net.packets.begin(), net.packets.end(), [](const auto& packet) {
+        return packet.ty == SEDS_DT_DISCOVERY_ANNOUNCE;
+    });
+    const auto ll_it = std::find_if(link_local.packets.begin(), link_local.packets.end(), [](const auto& packet) {
+        return packet.ty == SEDS_DT_DISCOVERY_ANNOUNCE;
+    });
+    ASSERT_NE(net_it, net.packets.end());
+    ASSERT_NE(ll_it, link_local.packets.end());
+
+    const auto net_eps = decode_discovery_payload(*net_it);
+    const auto ll_eps = decode_discovery_payload(*ll_it);
     ASSERT_TRUE(std::find(net_eps.begin(), net_eps.end(), SEDS_EP_RADIO) != net_eps.end());
     ASSERT_TRUE(std::find(net_eps.begin(), net_eps.end(), SEDS_EP_BOARD_LOCAL) == net_eps.end());
     ASSERT_TRUE(std::find(ll_eps.begin(), ll_eps.end(), SEDS_EP_BOARD_LOCAL) != ll_eps.end());

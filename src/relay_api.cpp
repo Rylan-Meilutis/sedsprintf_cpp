@@ -64,6 +64,18 @@ SedsResult seds_relay_poll_discovery(SedsRelay* r, bool* out_did_queue) {
     return SEDS_OK;
 }
 
+int32_t seds_relay_export_topology_len(SedsRelay* r) {
+    if (r == nullptr) return SEDS_BAD_ARG;
+    const auto json = seds::topology_snapshot_to_json(seds::export_topology_snapshot(*r));
+    return static_cast<int32_t>(json.size() + 1u);
+}
+
+SedsResult seds_relay_export_topology(SedsRelay* r, char* buf, size_t buf_len) {
+    if (r == nullptr) return SEDS_BAD_ARG;
+    const auto json = seds::topology_snapshot_to_json(seds::export_topology_snapshot(*r));
+    return static_cast<SedsResult>(seds::copy_text(json, buf, buf_len));
+}
+
 SedsResult seds_relay_periodic(SedsRelay* r, uint32_t timeout_ms) {
     bool did = false;
     seds_relay_poll_discovery(r, &did);

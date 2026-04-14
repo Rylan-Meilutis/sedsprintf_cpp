@@ -41,8 +41,10 @@ typedef enum SedsDataType {
   SEDS_DT_DISCOVERY_ANNOUNCE = 10,
   /* Time sync source discovery advertisement (dynamic list of sender IDs). */
   SEDS_DT_DISCOVERY_TIMESYNC_SOURCES = 11,
+  /* Full board-topology discovery advertisement (boards, endpoints, and connections). */
+  SEDS_DT_DISCOVERY_TOPOLOGY = 12,
   /* Built-in TelemetryError */
-  SEDS_DT_TELEMETRY_ERROR = 12,
+  SEDS_DT_TELEMETRY_ERROR = 13,
 } SedsDataType;
 
 typedef enum SedsDataEndpoint {
@@ -311,6 +313,23 @@ SedsResult seds_router_announce_discovery(SedsRouter * r);
  * Requires a build with the `discovery` feature.
  */
 SedsResult seds_router_poll_discovery(SedsRouter * r, bool * out_did_queue);
+
+/**
+ * @brief Return required buffer length for a JSON discovery-topology snapshot.
+ *
+ * The exported JSON mirrors the Rust topology export shape, including top-level
+ * `routers` plus per-side `announcers`.
+ *
+ * Requires a build with the `discovery` feature.
+ */
+int32_t seds_router_export_topology_len(SedsRouter * r);
+
+/**
+ * @brief Export the router's current discovery-topology snapshot as JSON.
+ *
+ * Requires a build with the `discovery` feature.
+ */
+SedsResult seds_router_export_topology(SedsRouter * r, char * buf, size_t buf_len);
 
 /**
  * @brief Run one router maintenance cycle.
@@ -738,6 +757,20 @@ SedsResult seds_relay_announce_discovery(SedsRelay * r);
  * Requires a build with the `discovery` feature.
  */
 SedsResult seds_relay_poll_discovery(SedsRelay * r, bool * out_did_queue);
+
+/**
+ * @brief Return required buffer length for a relay JSON discovery-topology snapshot.
+ *
+ * Requires a build with the `discovery` feature.
+ */
+int32_t seds_relay_export_topology_len(SedsRelay * r);
+
+/**
+ * @brief Export the relay's current discovery-topology snapshot as JSON.
+ *
+ * Requires a build with the `discovery` feature.
+ */
+SedsResult seds_relay_export_topology(SedsRelay * r, char * buf, size_t buf_len);
 
 /**
  * @brief Run one relay maintenance cycle.

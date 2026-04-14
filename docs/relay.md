@@ -24,8 +24,9 @@ Route selection supports:
 
 Discovery behavior:
 - learned routes are used for selective forwarding
-- announce traffic exports aggregated reachable topology
+- announce traffic exports full discovered topology graphs
 - expired routes are pruned and route mode falls back to remaining valid paths
+- exported snapshots include top-level router graph data plus per-side announcer detail
 
 Relevant files:
 - `src/relay.hpp`

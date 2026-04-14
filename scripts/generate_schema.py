@@ -99,6 +99,14 @@ DISCOVERY_TYPES = [
         "element": {"kind": "Dynamic", "data_type": "UInt8"},
         "endpoints": ["Discovery"],
     },
+    {
+        "rust": "DiscoveryTopology",
+        "name": "DISCOVERY_TOPOLOGY",
+        "doc": "Full board-topology discovery advertisement (boards, endpoints, and connections).",
+        "class": "Data",
+        "element": {"kind": "Dynamic", "data_type": "UInt8"},
+        "endpoints": ["Discovery"],
+    },
 ]
 
 RELIABLE_CONTROL_TYPES = [
@@ -179,9 +187,10 @@ def is_timesync_type(entry: dict) -> bool:
 
 
 def is_discovery_type(entry: dict) -> bool:
-    return entry["rust"] in {"DiscoveryAnnounce", "DiscoveryTimeSyncSources"} or entry["name"] in {
+    return entry["rust"] in {"DiscoveryAnnounce", "DiscoveryTimeSyncSources", "DiscoveryTopology"} or entry["name"] in {
         "DISCOVERY_ANNOUNCE",
         "DISCOVERY_TIMESYNC_SOURCES",
+        "DISCOVERY_TOPOLOGY",
     }
 
 

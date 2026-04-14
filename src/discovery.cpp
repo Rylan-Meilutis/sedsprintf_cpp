@@ -3,9 +3,52 @@
 #include <algorithm>
 #include <cstring>
 #include <ranges>
+#include <type_traits>
 
 namespace seds {
 namespace {
+
+template <typename OwnerT>
+std::vector<std::string> local_discovery_timesync_sources(const OwnerT& owner) {
+    std::vector<std::string> out;
+    if constexpr (std::is_same_v<OwnerT, SedsRouter>) {
+        if (owner.timesync.enabled && owner.timesync.has_network_time) {
+            out.push_back(owner.timesync.current_source.empty() ? "local" : owner.timesync.current_source);
+        }
+    }
+    return out;
+}
+
+template <typename SenderStateT>
+void refresh_sender_topology_state(SenderStateT& sender_state) {
+    normalize_topology_boards(sender_state.topology_boards);
+    const auto [reachable, sources] = summarize_topology_boards(sender_state.topology_boards);
+    sender_state.endpoints.clear();
+    sender_state.timesync_sources.clear();
+    sender_state.endpoints.insert(reachable.begin(), reachable.end());
+    sender_state.timesync_sources.insert(sources.begin(), sources.end());
+}
+
+void recompute_discovery_side_state(DiscoveryRoute& route) {
+    route.endpoints.clear();
+    route.timesync_sources.clear();
+    route.last_seen_ms = 0;
+    for (const auto& [_, sender] : route.announcers) {
+        route.endpoints.insert(sender.endpoints.begin(), sender.endpoints.end());
+        route.timesync_sources.insert(sender.timesync_sources.begin(), sender.timesync_sources.end());
+        route.last_seen_ms = std::max(route.last_seen_ms, sender.last_seen_ms);
+    }
+}
+
+TopologyBoardNode* sender_topology_board_mut(DiscoveryRoute::SenderState& sender_state, const std::string& sender_id) {
+    auto it = std::ranges::find(sender_state.topology_boards, sender_id, &TopologyBoardNode::sender_id);
+    if (it != sender_state.topology_boards.end()) {
+        return &*it;
+    }
+    sender_state.topology_boards.push_back(
+        TopologyBoardNode{sender_id, {}, {}, {}});
+    return &sender_state.topology_boards.back();
+}
 
 template <typename RouteMapT>
 bool prune_discovery_routes(RouteMapT& routes, uint64_t now_ms) {
@@ -20,14 +63,7 @@ bool prune_discovery_routes(RouteMapT& routes, uint64_t now_ms) {
                 ++sender_it;
             }
         }
-        route.endpoints.clear();
-        route.timesync_sources.clear();
-        route.last_seen_ms = 0;
-        for (const auto &[_, sender] : route.announcers) {
-            route.endpoints.insert(sender.endpoints.begin(), sender.endpoints.end());
-            route.timesync_sources.insert(sender.timesync_sources.begin(), sender.timesync_sources.end());
-            route.last_seen_ms = std::max(route.last_seen_ms, sender.last_seen_ms);
-        }
+        recompute_discovery_side_state(route);
         if (route.announcers.empty() || now_ms - route.last_seen_ms > kDiscoveryTtlMs) {
             it = routes.erase(it);
             changed = true;
@@ -58,7 +94,7 @@ std::vector<uint32_t> decode_discovery_endpoints(const PacketData& pkt) {
     return out;
 }
 
-std::vector<std::string> decode_discovery_timesync_sources(const PacketData& pkt) {
+std::vector<std::string> decode_discovery_timesync_sources_packet(const PacketData& pkt) {
     std::vector<std::string> out;
     if (pkt.payload.size() < 4) {
         return out;
@@ -83,6 +119,14 @@ std::vector<std::string> decode_discovery_timesync_sources(const PacketData& pkt
     return out;
 }
 
+std::vector<TopologyBoardNode> decode_discovery_topology_packet(const PacketData& pkt) {
+    try {
+        return decode_discovery_topology_payload(pkt.payload);
+    } catch (const std::invalid_argument&) {
+        return {};
+    }
+}
+
 std::vector<uint32_t> router_local_discovery_endpoints(const SedsRouter& r, bool link_local_enabled) {
     std::vector<uint32_t> out;
     for (const auto& local : r.locals) {
@@ -99,65 +143,129 @@ std::vector<uint32_t> router_local_discovery_endpoints(const SedsRouter& r, bool
     return out;
 }
 
-std::vector<uint32_t> advertised_router_endpoints_for_side(const SedsRouter& r, int32_t dst_side) {
-    const bool link_local_enabled =
-        dst_side >= 0 && static_cast<size_t>(dst_side) < r.sides.size() && r.sides[dst_side].link_local_enabled;
-    std::vector<uint32_t> out = router_local_discovery_endpoints(r, link_local_enabled);
-    for (const auto& [side_id, route] : r.discovery_routes) {
-        for (uint32_t ep : route.endpoints) {
-            if (link_local_enabled || !endpoint_link_local_only(ep)) {
-                out.push_back(ep);
+TopologyBoardNode local_router_topology_board(const SedsRouter& r, uint64_t now_ms, bool link_local_enabled) {
+    std::vector<std::string> connections;
+    for (const auto& [_, route] : r.discovery_routes) {
+        if (now_ms - route.last_seen_ms > kDiscoveryTtlMs) {
+            continue;
+        }
+        for (const auto& [sender, sender_state] : route.announcers) {
+            if (now_ms - sender_state.last_seen_ms <= kDiscoveryTtlMs) {
+                connections.push_back(sender);
             }
         }
     }
-    std::ranges::sort(out);
-    out.erase(std::ranges::unique(out).begin(), out.end());
-    return out;
+    sort_dedup_strings(connections);
+    return TopologyBoardNode{
+        r.sender,
+        router_local_discovery_endpoints(r, link_local_enabled),
+        local_discovery_timesync_sources(r),
+        std::move(connections),
+    };
 }
 
-std::vector<std::string> advertised_router_timesync_sources_for_side(const SedsRouter& r, int32_t /*dst_side*/) {
-    std::vector<std::string> out;
-    if (r.timesync.enabled && r.timesync.has_network_time) {
-        out.push_back(r.timesync.current_source.empty() ? "local" : r.timesync.current_source);
-    }
-    for (const auto& [side_id, route] : r.discovery_routes) {
-        static_cast<void>(side_id);
-        out.insert(out.end(), route.timesync_sources.begin(), route.timesync_sources.end());
-    }
-    std::ranges::sort(out);
-    out.erase(std::ranges::unique(out).begin(), out.end());
-    return out;
-}
-
-std::vector<uint32_t> advertised_relay_endpoints_for_side(const SedsRelay& r, int32_t dst_side) {
-    const bool link_local_enabled =
-        dst_side >= 0 && static_cast<size_t>(dst_side) < r.sides.size() && r.sides[dst_side].link_local_enabled;
-    std::vector<uint32_t> out;
-    for (const auto& [side_id, route] : r.discovery_routes) {
-        static_cast<void>(side_id);
-        for (uint32_t ep : route.endpoints) {
-            if (link_local_enabled || !endpoint_link_local_only(ep)) {
-                out.push_back(ep);
+TopologyBoardNode local_relay_topology_board(const SedsRelay& r, uint64_t now_ms) {
+    std::vector<std::string> connections;
+    for (const auto& [_, route] : r.discovery_routes) {
+        if (now_ms - route.last_seen_ms > kDiscoveryTtlMs) {
+            continue;
+        }
+        for (const auto& [sender, sender_state] : route.announcers) {
+            if (now_ms - sender_state.last_seen_ms <= kDiscoveryTtlMs) {
+                connections.push_back(sender);
             }
         }
     }
-    std::ranges::sort(out);
-    out.erase(std::ranges::unique(out).begin(), out.end());
-    return out;
+    sort_dedup_strings(connections);
+    return TopologyBoardNode{"RELAY", {}, {}, std::move(connections)};
 }
 
-std::vector<std::string> advertised_relay_timesync_sources_for_side(const SedsRelay& r, int32_t /*dst_side*/) {
-    std::vector<std::string> out;
-    for (const auto& [side_id, route] : r.discovery_routes) {
-        static_cast<void>(side_id);
-        out.insert(out.end(), route.timesync_sources.begin(), route.timesync_sources.end());
+template <typename OwnerT>
+std::vector<TopologyBoardNode> advertised_discovery_topology_for_side_impl(const OwnerT& owner, int32_t dst_side) {
+    const uint64_t now_ms = owner.now_ms();
+    const bool link_local_enabled =
+        dst_side >= 0 && static_cast<size_t>(dst_side) < owner.sides.size() && owner.sides[dst_side].link_local_enabled;
+    std::vector<TopologyBoardNode> boards;
+    if constexpr (std::is_same_v<OwnerT, SedsRouter>) {
+        boards.push_back(local_router_topology_board(owner, now_ms, link_local_enabled));
+    } else {
+        boards.push_back(local_relay_topology_board(owner, now_ms));
     }
-    std::ranges::sort(out);
-    out.erase(std::ranges::unique(out).begin(), out.end());
-    return out;
+    std::string local_sender;
+    if constexpr (std::is_same_v<OwnerT, SedsRouter>) {
+        local_sender = owner.sender;
+    } else {
+        local_sender = "RELAY";
+    }
+    for (const auto& [_, route] : owner.discovery_routes) {
+        if (now_ms - route.last_seen_ms > kDiscoveryTtlMs) {
+            continue;
+        }
+        for (const auto& [announcer, sender_state] : route.announcers) {
+            if (now_ms - sender_state.last_seen_ms > kDiscoveryTtlMs) {
+                continue;
+            }
+            auto sender_boards = sender_state.topology_boards;
+            if (sender_boards.empty()) {
+                sender_boards.push_back(
+                    TopologyBoardNode{announcer,
+                                      std::vector<uint32_t>(sender_state.endpoints.begin(), sender_state.endpoints.end()),
+                                      std::vector<std::string>(sender_state.timesync_sources.begin(),
+                                                               sender_state.timesync_sources.end()),
+                                      {local_sender}});
+            } else {
+                auto board_it = std::ranges::find(sender_boards, announcer, &TopologyBoardNode::sender_id);
+                if (board_it != sender_boards.end()) {
+                    board_it->connections.push_back(local_sender);
+                }
+            }
+            if (!link_local_enabled) {
+                for (auto& board : sender_boards) {
+                    board.reachable_endpoints.erase(
+                        std::remove_if(board.reachable_endpoints.begin(),
+                                       board.reachable_endpoints.end(),
+                                       [](const uint32_t ep) { return endpoint_link_local_only(ep); }),
+                        board.reachable_endpoints.end());
+                }
+            }
+            merge_topology_boards(boards, sender_boards);
+        }
+    }
+    normalize_topology_boards(boards);
+    return boards;
+}
+
+template <typename OwnerT>
+std::vector<uint32_t> advertised_endpoints_for_side(const OwnerT& owner, int32_t dst_side) {
+    const auto boards = advertised_discovery_topology_for_side_impl(owner, dst_side);
+    auto [reachable_endpoints, _] = summarize_topology_boards(boards);
+    const bool link_local_enabled =
+        dst_side >= 0 && static_cast<size_t>(dst_side) < owner.sides.size() && owner.sides[dst_side].link_local_enabled;
+    reachable_endpoints.erase(std::remove_if(reachable_endpoints.begin(),
+                                             reachable_endpoints.end(),
+                                             [link_local_enabled](const uint32_t ep) {
+                                                 return ep == SEDS_EP_DISCOVERY ||
+                                                        (!link_local_enabled && endpoint_link_local_only(ep));
+                                             }),
+                              reachable_endpoints.end());
+    return reachable_endpoints;
+}
+
+template <typename OwnerT>
+std::vector<std::string> advertised_timesync_sources_for_side(const OwnerT& owner, int32_t dst_side) {
+    auto [_, sources] = summarize_topology_boards(advertised_discovery_topology_for_side_impl(owner, dst_side));
+    return sources;
 }
 
 }  // namespace
+
+std::vector<TopologyBoardNode> advertised_discovery_topology_for_side(const SedsRouter& r, int32_t dst_side) {
+    return advertised_discovery_topology_for_side_impl(r, dst_side);
+}
+
+std::vector<TopologyBoardNode> advertised_discovery_topology_for_side(const SedsRelay& r, int32_t dst_side) {
+    return advertised_discovery_topology_for_side_impl(r, dst_side);
+}
 
 void queue_discovery_packets(SedsRouter& r) {
     const uint64_t now = r.now_ms();
@@ -168,7 +276,18 @@ void queue_discovery_packets(SedsRouter& r) {
         if (!r.sides[side_id].egress_enabled) {
             continue;
         }
-        auto timesync_sources = advertised_router_timesync_sources_for_side(r, static_cast<int32_t>(side_id));
+        const auto topology = advertised_discovery_topology_for_side_impl(r, static_cast<int32_t>(side_id));
+        std::optional<PacketData> topology_pkt;
+        if (!topology.empty()) {
+            const auto topo = build_discovery_topology(r.sender, now, topology);
+            topology_pkt = PacketData{topo.type(), topo.sender(), topo.endpoints(), topo.timestamp(),
+                                      std::vector<uint8_t>(topo.payload().begin(), topo.payload().end())};
+        }
+        auto timesync_sources = advertised_timesync_sources_for_side(r, static_cast<int32_t>(side_id));
+        if (topology_pkt.has_value()) {
+            enqueue_tx_front(r.tx_queue, r.tx_queue_bytes,
+                             {std::move(*topology_pkt), std::nullopt, static_cast<int32_t>(side_id), false});
+        }
         if (!timesync_sources.empty()) {
             std::vector<uint8_t> ts_payload;
             append_le<uint32_t>(static_cast<uint32_t>(timesync_sources.size()), ts_payload);
@@ -182,7 +301,7 @@ void queue_discovery_packets(SedsRouter& r) {
                              {std::move(pkt), std::nullopt, static_cast<int32_t>(side_id), false});
         }
         std::vector<uint8_t> payload;
-        for (const uint32_t ep : advertised_router_endpoints_for_side(r, static_cast<int32_t>(side_id))) {
+        for (const uint32_t ep : advertised_endpoints_for_side(r, static_cast<int32_t>(side_id))) {
             append_le<uint32_t>(ep, payload);
         }
         auto pkt = make_internal_packet(SEDS_DT_DISCOVERY_ANNOUNCE, now, std::move(payload));
@@ -203,7 +322,18 @@ void queue_discovery_packets(SedsRelay& r) {
         if (!r.sides[side_id].egress_enabled) {
             continue;
         }
-        auto timesync_sources = advertised_relay_timesync_sources_for_side(r, static_cast<int32_t>(side_id));
+        const auto topology = advertised_discovery_topology_for_side_impl(r, static_cast<int32_t>(side_id));
+        std::optional<PacketData> topology_pkt;
+        if (!topology.empty()) {
+            const auto topo = build_discovery_topology("RELAY", now, topology);
+            topology_pkt = PacketData{topo.type(), topo.sender(), topo.endpoints(), topo.timestamp(),
+                                      std::vector<uint8_t>(topo.payload().begin(), topo.payload().end())};
+        }
+        auto timesync_sources = advertised_timesync_sources_for_side(r, static_cast<int32_t>(side_id));
+        if (topology_pkt.has_value()) {
+            enqueue_tx_front(r.tx_queue, r.tx_queue_bytes,
+                             {std::move(*topology_pkt), std::nullopt, static_cast<int32_t>(side_id), false});
+        }
         if (!timesync_sources.empty()) {
             std::vector<uint8_t> ts_payload;
             append_le<uint32_t>(static_cast<uint32_t>(timesync_sources.size()), ts_payload);
@@ -217,7 +347,7 @@ void queue_discovery_packets(SedsRelay& r) {
                              {std::move(pkt), std::nullopt, static_cast<int32_t>(side_id), false});
         }
         std::vector<uint8_t> payload;
-        for (const uint32_t ep : advertised_relay_endpoints_for_side(r, static_cast<int32_t>(side_id))) {
+        for (const uint32_t ep : advertised_endpoints_for_side(r, static_cast<int32_t>(side_id))) {
             append_le<uint32_t>(ep, payload);
         }
         auto pkt = make_internal_packet(SEDS_DT_DISCOVERY_ANNOUNCE, now, std::move(payload));
@@ -235,31 +365,45 @@ void handle_discovery_packet(SedsRouter& r, const PacketData& pkt, std::optional
     }
     DiscoveryRoute next = r.discovery_routes[*src_side];
     auto &sender_state = next.announcers[pkt.sender];
-    sender_state.last_seen_ms = r.now_ms();
+    const bool link_local_enabled =
+        *src_side >= 0 && static_cast<size_t>(*src_side) < r.sides.size() && r.sides[*src_side].link_local_enabled;
     bool changed = false;
     if (pkt.ty == SEDS_DT_DISCOVERY_ANNOUNCE) {
-        std::unordered_set<uint32_t> eps;
-        for (uint32_t ep : decode_discovery_endpoints(pkt)) {
-            eps.insert(ep);
+        auto reachable = decode_discovery_endpoints(pkt);
+        auto* board = sender_topology_board_mut(sender_state, pkt.sender);
+        changed = board->reachable_endpoints != reachable;
+        board->reachable_endpoints = std::move(reachable);
+        if (!link_local_enabled) {
+            board->reachable_endpoints.erase(
+                std::remove_if(board->reachable_endpoints.begin(),
+                               board->reachable_endpoints.end(),
+                               [](const uint32_t ep) { return endpoint_link_local_only(ep); }),
+                board->reachable_endpoints.end());
         }
-        changed = sender_state.endpoints != eps;
-        sender_state.endpoints = std::move(eps);
+        refresh_sender_topology_state(sender_state);
     } else if (pkt.ty == SEDS_DT_DISCOVERY_TIMESYNC_SOURCES) {
-        std::unordered_set<std::string> sources;
-        for (auto& source : decode_discovery_timesync_sources(pkt)) {
-            sources.insert(std::move(source));
+        auto* board = sender_topology_board_mut(sender_state, pkt.sender);
+        const auto sources = decode_discovery_timesync_sources_packet(pkt);
+        changed = board->reachable_timesync_sources != sources;
+        board->reachable_timesync_sources = sources;
+        refresh_sender_topology_state(sender_state);
+    } else if (pkt.ty == SEDS_DT_DISCOVERY_TOPOLOGY) {
+        auto boards = decode_discovery_topology_packet(pkt);
+        if (!link_local_enabled) {
+            for (auto& board : boards) {
+                board.reachable_endpoints.erase(
+                    std::remove_if(board.reachable_endpoints.begin(),
+                                   board.reachable_endpoints.end(),
+                                   [](const uint32_t ep) { return endpoint_link_local_only(ep); }),
+                    board.reachable_endpoints.end());
+            }
         }
-        changed = sender_state.timesync_sources != sources;
-        sender_state.timesync_sources = std::move(sources);
+        changed = sender_state.topology_boards != boards;
+        sender_state.topology_boards = std::move(boards);
+        refresh_sender_topology_state(sender_state);
     }
-    next.endpoints.clear();
-    next.timesync_sources.clear();
-    next.last_seen_ms = 0;
-    for (const auto &[_, sender] : next.announcers) {
-        next.endpoints.insert(sender.endpoints.begin(), sender.endpoints.end());
-        next.timesync_sources.insert(sender.timesync_sources.begin(), sender.timesync_sources.end());
-        next.last_seen_ms = std::max(next.last_seen_ms, sender.last_seen_ms);
-    }
+    sender_state.last_seen_ms = r.now_ms();
+    recompute_discovery_side_state(next);
     r.discovery_routes[*src_side] = std::move(next);
     if (changed) {
         note_discovery_topology_change(r, r.now_ms());
@@ -272,31 +416,45 @@ void handle_discovery_packet(SedsRelay& r, const PacketData& pkt, std::optional<
     }
     DiscoveryRoute next = r.discovery_routes[*src_side];
     auto &sender_state = next.announcers[pkt.sender];
-    sender_state.last_seen_ms = r.now_ms();
+    const bool link_local_enabled =
+        *src_side >= 0 && static_cast<size_t>(*src_side) < r.sides.size() && r.sides[*src_side].link_local_enabled;
     bool changed = false;
     if (pkt.ty == SEDS_DT_DISCOVERY_ANNOUNCE) {
-        std::unordered_set<uint32_t> eps;
-        for (uint32_t ep : decode_discovery_endpoints(pkt)) {
-            eps.insert(ep);
+        auto reachable = decode_discovery_endpoints(pkt);
+        auto* board = sender_topology_board_mut(sender_state, pkt.sender);
+        changed = board->reachable_endpoints != reachable;
+        board->reachable_endpoints = std::move(reachable);
+        if (!link_local_enabled) {
+            board->reachable_endpoints.erase(
+                std::remove_if(board->reachable_endpoints.begin(),
+                               board->reachable_endpoints.end(),
+                               [](const uint32_t ep) { return endpoint_link_local_only(ep); }),
+                board->reachable_endpoints.end());
         }
-        changed = sender_state.endpoints != eps;
-        sender_state.endpoints = std::move(eps);
+        refresh_sender_topology_state(sender_state);
     } else if (pkt.ty == SEDS_DT_DISCOVERY_TIMESYNC_SOURCES) {
-        std::unordered_set<std::string> sources;
-        for (auto& source : decode_discovery_timesync_sources(pkt)) {
-            sources.insert(std::move(source));
+        auto* board = sender_topology_board_mut(sender_state, pkt.sender);
+        const auto sources = decode_discovery_timesync_sources_packet(pkt);
+        changed = board->reachable_timesync_sources != sources;
+        board->reachable_timesync_sources = sources;
+        refresh_sender_topology_state(sender_state);
+    } else if (pkt.ty == SEDS_DT_DISCOVERY_TOPOLOGY) {
+        auto boards = decode_discovery_topology_packet(pkt);
+        if (!link_local_enabled) {
+            for (auto& board : boards) {
+                board.reachable_endpoints.erase(
+                    std::remove_if(board.reachable_endpoints.begin(),
+                                   board.reachable_endpoints.end(),
+                                   [](const uint32_t ep) { return endpoint_link_local_only(ep); }),
+                    board.reachable_endpoints.end());
+            }
         }
-        changed = sender_state.timesync_sources != sources;
-        sender_state.timesync_sources = std::move(sources);
+        changed = sender_state.topology_boards != boards;
+        sender_state.topology_boards = std::move(boards);
+        refresh_sender_topology_state(sender_state);
     }
-    next.endpoints.clear();
-    next.timesync_sources.clear();
-    next.last_seen_ms = 0;
-    for (const auto &[_, sender] : next.announcers) {
-        next.endpoints.insert(sender.endpoints.begin(), sender.endpoints.end());
-        next.timesync_sources.insert(sender.timesync_sources.begin(), sender.timesync_sources.end());
-        next.last_seen_ms = std::max(next.last_seen_ms, sender.last_seen_ms);
-    }
+    sender_state.last_seen_ms = r.now_ms();
+    recompute_discovery_side_state(next);
     r.discovery_routes[*src_side] = std::move(next);
     if (changed) {
         note_discovery_topology_change(r, r.now_ms());
