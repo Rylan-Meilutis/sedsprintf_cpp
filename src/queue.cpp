@@ -6,10 +6,10 @@ namespace {
 template <typename ItemT>
 bool enqueue_bounded(std::deque<ItemT>& queue, size_t& queue_bytes, ItemT item, bool front) {
     const size_t cost = byte_cost(item);
-    if (cost > kMaxQueueBytes) {
+    if (cost > kMaxQueueBudget) {
         return false;
     }
-    while (!queue.empty() && queue_bytes + cost > kMaxQueueBytes) {
+    while (!queue.empty() && queue_bytes + cost > kMaxQueueBudget) {
         queue_bytes -= byte_cost(queue.front());
         queue.pop_front();
     }
@@ -47,6 +47,10 @@ bool enqueue_tx_front(std::deque<TxItem>& queue, size_t& queue_bytes, TxItem ite
 
 bool enqueue_rx(std::deque<RxItem>& queue, size_t& queue_bytes, RxItem item) {
     return enqueue_bounded(queue, queue_bytes, std::move(item), false);
+}
+
+bool enqueue_rx_front(std::deque<RxItem>& queue, size_t& queue_bytes, RxItem item) {
+    return enqueue_bounded(queue, queue_bytes, std::move(item), true);
 }
 
 std::optional<TxItem> pop_tx(std::deque<TxItem>& queue, size_t& queue_bytes) {

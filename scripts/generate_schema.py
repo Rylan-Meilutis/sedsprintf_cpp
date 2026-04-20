@@ -120,6 +120,15 @@ RELIABLE_CONTROL_TYPES = [
         "endpoints": ["TelemetryError"],
     },
     {
+        "rust": "ReliablePartialAck",
+        "name": "RELIABLE_PARTIAL_ACK",
+        "doc": "Internal reliable-delivery selective acknowledgement (type, seq).",
+        "class": "Data",
+        "priority": 250,
+        "element": {"kind": "Static", "data_type": "UInt32", "count": 2},
+        "endpoints": ["TelemetryError"],
+    },
+    {
         "rust": "ReliablePacketRequest",
         "name": "RELIABLE_PACKET_REQUEST",
         "doc": "Internal reliable-delivery retransmit request (type, seq).",

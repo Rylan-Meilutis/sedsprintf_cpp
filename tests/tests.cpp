@@ -1762,7 +1762,7 @@ void test_bounded_queue_behavior() {
   }
   assert(seds_router_process_tx_queue(router) == SEDS_OK);
   assert(!tx.frames.empty());
-  assert(tx.frames.size() < 6);
+  assert(tx.frames.size() == 6);
 
   seds_router_free(router);
 }
@@ -3131,7 +3131,7 @@ void test_relay_reliable_reorders_out_of_order_frames() {
             SEDS_OK);
 
   ASSERT_EQ(seds_relay_process_all_queues(relay.get()), SEDS_OK);
-  ASSERT_EQ(dst.frames.size(), 1u);
+  ASSERT_EQ(dst.frames.size(), 2u);
   auto first = seds::peek_frame_info(dst.frames.front().data(), dst.frames.front().size(), true);
   ASSERT_TRUE(first.has_value());
   ASSERT_TRUE(first->reliable.has_value());
@@ -3230,7 +3230,7 @@ void test_reliable_sender_does_not_block_while_waiting_for_ack() {
   const float gps2[] = {4.0f, 5.0f, 6.0f};
   ASSERT_EQ(seds_router_log_f32(router.get(), SEDS_DT_GPS_DATA, gps1, 3), SEDS_OK);
   ASSERT_EQ(seds_router_log_f32(router.get(), SEDS_DT_GPS_DATA, gps2, 3), SEDS_OK);
-  ASSERT_EQ(tx.frames.size(), 1u);
+  ASSERT_EQ(tx.frames.size(), 2u);
 
   const auto ack = reliable_control_wire(SEDS_DT_RELIABLE_ACK, SEDS_DT_GPS_DATA, 1);
   ASSERT_EQ(seds_router_rx_serialized_packet_to_queue_from_side(router.get(), static_cast<uint32_t>(side), ack.data(),
@@ -3279,7 +3279,7 @@ void test_relay_reliable_sender_does_not_block_while_waiting_for_ack() {
   ASSERT_EQ(seds_relay_process_all_queues(relay.get()), SEDS_OK);
   ASSERT_EQ(seds_relay_rx_packet_from_side(relay.get(), static_cast<uint32_t>(src), &pkt2), SEDS_OK);
   ASSERT_EQ(seds_relay_process_all_queues(relay.get()), SEDS_OK);
-  ASSERT_EQ(dst.frames.size(), 1u);
+  ASSERT_EQ(dst.frames.size(), 2u);
 
   const auto ack = reliable_control_wire(SEDS_DT_RELIABLE_ACK, SEDS_DT_GPS_DATA, 1);
   ASSERT_EQ(seds_relay_rx_serialized_from_side(relay.get(), static_cast<uint32_t>(out), ack.data(), ack.size()),

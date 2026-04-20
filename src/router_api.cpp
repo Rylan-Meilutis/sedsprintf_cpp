@@ -707,6 +707,12 @@ SedsResult seds_router_log_bytes_ex(SedsRouter * r, SedsDataType ty, const uint8
       const auto rc = seds::transmit_item(*r, *item);
       if (rc != SEDS_OK)
       {
+        if (rc == SEDS_IO && r->side_tx_deferred)
+        {
+          r->side_tx_deferred = false;
+          seds::enqueue_tx_front(r->tx_queue, r->tx_queue_bytes, std::move(*item));
+          return SEDS_OK;
+        }
         return rc;
       }
     }
@@ -846,6 +852,11 @@ SedsResult seds_router_process_tx_queue_with_timeout(SedsRouter * r, uint32_t)
     const auto rc = seds::transmit_item(*r, *item);
     if (rc != SEDS_OK)
     {
+      if (rc == SEDS_IO)
+      {
+        seds::enqueue_tx_front(r->tx_queue, r->tx_queue_bytes, std::move(*item));
+        return SEDS_OK;
+      }
       return rc;
     }
   }
@@ -863,7 +874,8 @@ SedsResult seds_router_process_rx_queue_with_timeout(SedsRouter * r, uint32_t)
     {
       auto frame = seds::peek_frame_info(item->wire_bytes.data(), item->wire_bytes.size(), true);
       if (frame && !seds::is_discovery_control_type(frame->envelope.ty) &&
-          frame->envelope.ty != SEDS_DT_RELIABLE_ACK && frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
+          frame->envelope.ty != SEDS_DT_RELIABLE_ACK && frame->envelope.ty != SEDS_DT_RELIABLE_PARTIAL_ACK &&
+          frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
           frame->envelope.ty != SEDS_DT_TIME_SYNC_ANNOUNCE && frame->envelope.ty != SEDS_DT_TIME_SYNC_REQUEST &&
           frame->envelope.ty != SEDS_DT_TIME_SYNC_RESPONSE)
       {
@@ -894,7 +906,9 @@ SedsResult seds_router_process_all_queues_with_timeout(SedsRouter * r, uint32_t 
         {
           auto frame = seds::peek_frame_info(item->wire_bytes.data(), item->wire_bytes.size(), true);
           if (frame && !seds::is_discovery_control_type(frame->envelope.ty) &&
-              frame->envelope.ty != SEDS_DT_RELIABLE_ACK && frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
+              frame->envelope.ty != SEDS_DT_RELIABLE_ACK &&
+              frame->envelope.ty != SEDS_DT_RELIABLE_PARTIAL_ACK &&
+              frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
               frame->envelope.ty != SEDS_DT_TIME_SYNC_ANNOUNCE && frame->envelope.ty != SEDS_DT_TIME_SYNC_REQUEST &&
               frame->envelope.ty != SEDS_DT_TIME_SYNC_RESPONSE)
           {
@@ -910,6 +924,11 @@ SedsResult seds_router_process_all_queues_with_timeout(SedsRouter * r, uint32_t 
         const auto rc = seds::transmit_item(*r, *item);
         if (rc != SEDS_OK)
         {
+          if (rc == SEDS_IO)
+          {
+            seds::enqueue_tx_front(r->tx_queue, r->tx_queue_bytes, std::move(*item));
+            return SEDS_OK;
+          }
           return rc;
         }
       }
@@ -933,6 +952,11 @@ SedsResult seds_router_process_all_queues_with_timeout(SedsRouter * r, uint32_t 
     const auto rc = seds::transmit_item(*r, *item);
     if (rc != SEDS_OK)
     {
+      if (rc == SEDS_IO)
+      {
+        seds::enqueue_tx_front(r->tx_queue, r->tx_queue_bytes, std::move(*item));
+        break;
+      }
       return rc;
     }
     if (timeout_expired(tx_start_ms, r->now_ms(), static_cast<uint32_t>(tx_budget_ms)))
@@ -948,7 +972,8 @@ SedsResult seds_router_process_all_queues_with_timeout(SedsRouter * r, uint32_t 
     {
       auto frame = seds::peek_frame_info(item->wire_bytes.data(), item->wire_bytes.size(), true);
       if (frame && !seds::is_discovery_control_type(frame->envelope.ty) &&
-          frame->envelope.ty != SEDS_DT_RELIABLE_ACK && frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
+          frame->envelope.ty != SEDS_DT_RELIABLE_ACK && frame->envelope.ty != SEDS_DT_RELIABLE_PARTIAL_ACK &&
+          frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
           frame->envelope.ty != SEDS_DT_TIME_SYNC_ANNOUNCE && frame->envelope.ty != SEDS_DT_TIME_SYNC_REQUEST &&
           frame->envelope.ty != SEDS_DT_TIME_SYNC_RESPONSE)
       {
@@ -1009,19 +1034,26 @@ SedsResult seds_router_receive_serialized_from_side(SedsRouter * r, uint32_t sid
   const auto pkt = seds::deserialize_packet(bytes, len);
   if (!pkt)
     return SEDS_DESERIALIZE;
-  if (!seds::process_reliable_ingress(*r, static_cast<int32_t>(side_id), *frame))
+  if (!seds::process_reliable_ingress(*r, static_cast<int32_t>(side_id), *frame, *pkt,
+                                      std::span<const uint8_t>(bytes, len)))
   {
     return SEDS_OK;
   }
   if (!seds::is_discovery_control_type(frame->envelope.ty) &&
-      frame->envelope.ty != SEDS_DT_RELIABLE_ACK && frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
+      frame->envelope.ty != SEDS_DT_RELIABLE_ACK && frame->envelope.ty != SEDS_DT_RELIABLE_PARTIAL_ACK &&
+      frame->envelope.ty != SEDS_DT_RELIABLE_PACKET_REQUEST &&
       frame->envelope.ty != SEDS_DT_TIME_SYNC_ANNOUNCE && frame->envelope.ty != SEDS_DT_TIME_SYNC_REQUEST &&
       frame->envelope.ty != SEDS_DT_TIME_SYNC_RESPONSE)
   {
     seds::dispatch_local_serialized_handlers(frame->envelope, bytes, len, r->locals);
   }
   seds::router_receive_impl(*r, *pkt, static_cast<int32_t>(side_id));
-  return SEDS_OK;
+  for (auto & released: r->reliable_released_rx)
+  {
+    seds::enqueue_rx(r->rx_queue, r->rx_queue_bytes, std::move(released));
+  }
+  r->reliable_released_rx.clear();
+  return seds_router_process_rx_queue(r);
 }
 
 SedsResult seds_router_receive_from_side(SedsRouter * r, uint32_t side_id, const SedsPacketView * view)
@@ -1075,14 +1107,26 @@ SedsResult seds_router_rx_serialized_packet_to_queue_from_side(SedsRouter * r, u
   const auto pkt = seds::deserialize_packet(bytes, len);
   if (!pkt)
     return SEDS_DESERIALIZE;
-  if (!seds::process_reliable_ingress(*r, static_cast<int32_t>(side_id), *frame))
+  if (!seds::process_reliable_ingress(*r, static_cast<int32_t>(side_id), *frame, *pkt,
+                                      std::span<const uint8_t>(bytes, len)))
   {
     return SEDS_OK;
   }
-  return seds::enqueue_rx(r->rx_queue, r->rx_queue_bytes,
-                          {*pkt, static_cast<int32_t>(side_id), std::vector<uint8_t>(bytes, bytes + len)})
-           ? SEDS_OK
-           : SEDS_PACKET_TOO_LARGE;
+  const bool has_released = !r->reliable_released_rx.empty();
+  const seds::RxItem current{*pkt, static_cast<int32_t>(side_id), std::vector<uint8_t>(bytes, bytes + len)};
+  const bool enqueued = has_released
+                          ? seds::enqueue_rx_front(r->rx_queue, r->rx_queue_bytes, current)
+                          : seds::enqueue_rx(r->rx_queue, r->rx_queue_bytes, current);
+  if (!enqueued)
+  {
+    return SEDS_PACKET_TOO_LARGE;
+  }
+  for (auto & released: r->reliable_released_rx)
+  {
+    seds::enqueue_rx(r->rx_queue, r->rx_queue_bytes, std::move(released));
+  }
+  r->reliable_released_rx.clear();
+  return SEDS_OK;
 }
 
 SedsResult seds_router_rx_packet_to_queue_from_side(SedsRouter * r, uint32_t side_id, const SedsPacketView * view)

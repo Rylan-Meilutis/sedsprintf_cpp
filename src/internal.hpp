@@ -7,6 +7,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -31,7 +32,22 @@ namespace seds
   constexpr uint64_t kDiscoverySlowMs = 5000;
   constexpr uint64_t kDiscoveryTtlMs = 30000;
   constexpr size_t kStartingQueueBytes = 64;
-  constexpr size_t kMaxQueueBytes = 1024 * 50;
+#ifndef SEDSPRINTF_MAX_RECENT_RX_IDS
+  constexpr size_t kMaxRecentRxIds = 128;
+#else
+  constexpr size_t kMaxRecentRxIds = SEDSPRINTF_MAX_RECENT_RX_IDS;
+#endif
+#ifndef SEDSPRINTF_MAX_QUEUE_BUDGET
+  constexpr size_t kMaxQueueBudget = 1024 * 100;
+#else
+  constexpr size_t kMaxQueueBudget = SEDSPRINTF_MAX_QUEUE_BUDGET;
+#endif
+  constexpr size_t kRecentRxQueueBytes =
+      kMaxRecentRxIds * sizeof(uint64_t) < kMaxQueueBudget ? kMaxRecentRxIds * sizeof(uint64_t) : kMaxQueueBudget;
+  constexpr size_t kMaxQueueBytes = kMaxQueueBudget;
+  constexpr uint64_t kReliableRetransmitMs = 200;
+  constexpr uint32_t kReliableMaxRetries = 8;
+  constexpr size_t kReliableMaxPending = 16;
 
   enum class ElementDataType : uint8_t
   {
@@ -198,17 +214,31 @@ namespace seds
   struct ReliableTxState
   {
     uint32_t next_seq{1};
-    std::optional<std::vector<uint8_t> > inflight_bytes;
-    uint32_t inflight_seq{};
-    uint64_t last_send_ms{};
-    uint32_t retries{};
-    std::deque<PacketData> pending;
+
+    struct Sent
+    {
+      std::vector<uint8_t> bytes;
+      uint64_t last_send_ms{};
+      uint32_t retries{};
+      bool queued{};
+      bool partial_acked{};
+    };
+
+    std::deque<uint32_t> sent_order;
+    std::map<uint32_t, Sent> sent;
   };
 
   struct ReliableRxState
   {
+    struct Buffered
+    {
+      PacketData pkt;
+      std::vector<uint8_t> wire_bytes;
+    };
+
     uint32_t expected_seq{1};
     uint32_t last_ack{};
+    std::map<uint32_t, Buffered> buffered;
   };
 
   struct ReliableReturnRouteState
@@ -331,6 +361,8 @@ namespace seds
   bool enqueue_tx_front(std::deque<TxItem> & queue, size_t & queue_bytes, TxItem item);
 
   bool enqueue_rx(std::deque<RxItem> & queue, size_t & queue_bytes, RxItem item);
+
+  bool enqueue_rx_front(std::deque<RxItem> & queue, size_t & queue_bytes, RxItem item);
 
   std::optional<TxItem> pop_tx(std::deque<TxItem> & queue, size_t & queue_bytes);
 
@@ -514,6 +546,7 @@ struct SedsRouter
   std::vector<seds::Side> sides;
   std::deque<seds::TxItem> tx_queue;
   std::deque<seds::RxItem> rx_queue;
+  std::vector<seds::RxItem> reliable_released_rx;
   size_t tx_queue_bytes{};
   size_t rx_queue_bytes{};
   std::deque<uint64_t> recent_ids;
@@ -532,6 +565,8 @@ struct SedsRouter
   std::string sender;
   std::string node_sender;
   seds::TimeSyncRuntime timesync;
+  bool side_tx_active{};
+  bool side_tx_deferred{};
   mutable std::recursive_mutex mu;
 
   uint64_t now_ms() const;
@@ -546,6 +581,7 @@ struct SedsRelay
   std::vector<seds::Side> sides;
   std::deque<seds::TxItem> tx_queue;
   std::deque<seds::RxItem> rx_queue;
+  std::vector<seds::RxItem> reliable_released_rx;
   size_t tx_queue_bytes{};
   size_t rx_queue_bytes{};
   std::deque<uint64_t> recent_ids;
@@ -561,6 +597,8 @@ struct SedsRelay
   std::unordered_map<uint64_t, seds::ReliableRxState> reliable_rx;
   std::unordered_map<uint64_t, seds::ReliableReturnRouteState> reliable_return_routes;
   std::unordered_map<uint64_t, std::unordered_set<uint64_t> > end_to_end_acked_destinations;
+  bool side_tx_active{};
+  bool side_tx_deferred{};
   mutable std::recursive_mutex mu;
 
   uint64_t now_ms() const;
@@ -609,9 +647,11 @@ namespace seds
 
   void handle_reliable_ack(SedsRelay & r, int32_t side_id, uint32_t ty, uint32_t ack);
 
-  bool process_reliable_ingress(SedsRouter & r, int32_t side_id, const FrameInfoLite & frame);
+  bool process_reliable_ingress(SedsRouter & r, int32_t side_id, const FrameInfoLite & frame, const PacketData & pkt,
+                                std::span<const uint8_t> wire_bytes);
 
-  bool process_reliable_ingress(SedsRelay & r, int32_t side_id, const FrameInfoLite & frame);
+  bool process_reliable_ingress(SedsRelay & r, int32_t side_id, const FrameInfoLite & frame, const PacketData & pkt,
+                                std::span<const uint8_t> wire_bytes);
 
   void process_end_to_end_reliable_timeouts(SedsRouter & r);
 

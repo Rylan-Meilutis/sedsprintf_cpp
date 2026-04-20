@@ -238,12 +238,18 @@ SedsResult seds_relay_rx_serialized_from_side(SedsRelay* r, uint32_t side_id, co
     }
     const auto pkt = seds::deserialize_packet(bytes, len);
     if (!pkt) return SEDS_DESERIALIZE;
-    if (!seds::process_reliable_ingress(*r, static_cast<int32_t>(side_id), *frame)) {
+    if (!seds::process_reliable_ingress(*r, static_cast<int32_t>(side_id), *frame, *pkt,
+                                        std::span<const uint8_t>(bytes, len))) {
         return SEDS_OK;
     }
-    return seds::enqueue_rx(r->rx_queue, r->rx_queue_bytes, {*pkt, static_cast<int32_t>(side_id), {}})
-               ? SEDS_OK
-               : SEDS_PACKET_TOO_LARGE;
+    if (!seds::enqueue_rx(r->rx_queue, r->rx_queue_bytes, {*pkt, static_cast<int32_t>(side_id), {}})) {
+        return SEDS_PACKET_TOO_LARGE;
+    }
+    for (auto& released : r->reliable_released_rx) {
+        seds::enqueue_rx(r->rx_queue, r->rx_queue_bytes, std::move(released));
+    }
+    r->reliable_released_rx.clear();
+    return SEDS_OK;
 }
 
 SedsResult seds_relay_rx_packet_from_side(SedsRelay* r, uint32_t side_id, const SedsPacketView* view) {
@@ -285,6 +291,10 @@ SedsResult seds_relay_process_tx_queue_with_timeout(SedsRelay* r, uint32_t) {
     while (auto item = seds::pop_tx(r->tx_queue, r->tx_queue_bytes)) {
         const auto rc = seds::transmit_item(*r, *item);
         if (rc != SEDS_OK) {
+            if (rc == SEDS_IO) {
+                seds::enqueue_tx_front(r->tx_queue, r->tx_queue_bytes, std::move(*item));
+                return SEDS_OK;
+            }
             return rc;
         }
     }
@@ -307,6 +317,10 @@ SedsResult seds_relay_process_all_queues_with_timeout(SedsRelay* r, uint32_t tim
             if (auto item = seds::pop_tx(r->tx_queue, r->tx_queue_bytes)) {
                 const auto rc = seds::transmit_item(*r, *item);
                 if (rc != SEDS_OK) {
+                    if (rc == SEDS_IO) {
+                        seds::enqueue_tx_front(r->tx_queue, r->tx_queue_bytes, std::move(*item));
+                        return SEDS_OK;
+                    }
                     return rc;
                 }
             }

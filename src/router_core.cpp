@@ -12,7 +12,24 @@ namespace seds
 
     bool is_internal_control_type(const uint32_t ty)
     {
-      return ty == SEDS_DT_RELIABLE_ACK || ty == SEDS_DT_RELIABLE_PACKET_REQUEST;
+      return ty == SEDS_DT_RELIABLE_ACK || ty == SEDS_DT_RELIABLE_PARTIAL_ACK ||
+             ty == SEDS_DT_RELIABLE_PACKET_REQUEST;
+    }
+
+    template<typename OwnerT>
+    SedsResult call_serialized_tx(OwnerT & owner, Side & side, const std::vector<uint8_t> & bytes)
+    {
+      if (owner.side_tx_active)
+      {
+        owner.side_tx_deferred = true;
+        return SEDS_IO;
+      }
+      owner.side_tx_active = true;
+      const auto reset = std::unique_ptr<void, void (*)(void *)>(&owner, [](void * ptr)
+      {
+        static_cast<OwnerT *>(ptr)->side_tx_active = false;
+      });
+      return side.serialized_tx(bytes.data(), bytes.size(), side.user);
     }
 
     bool is_end_to_end_ack_sender(const std::string_view sender)
@@ -188,16 +205,31 @@ namespace seds
       {
         return;
       }
-      if (it->second.inflight_bytes.has_value() && ack >= it->second.inflight_seq)
+      auto & tx = it->second;
+      if (kTypeInfo[ty].reliable_mode == ReliableMode::Unordered)
       {
-        it->second.inflight_bytes.reset();
-        it->second.retries = 0;
-        if (!it->second.pending.empty())
-        {
-          auto next = std::move(it->second.pending.front());
-          it->second.pending.pop_front();
-          enqueue_tx_front(owner.tx_queue, owner.tx_queue_bytes, {std::move(next), std::nullopt, side_id, false});
-        }
+        tx.sent.erase(ack);
+        std::erase(tx.sent_order, ack);
+        return;
+      }
+      while (!tx.sent_order.empty() && tx.sent_order.front() <= ack)
+      {
+        tx.sent.erase(tx.sent_order.front());
+        tx.sent_order.pop_front();
+      }
+    }
+
+    template<typename OwnerT>
+    void handle_partial_ack_impl(OwnerT & owner, int32_t side_id, uint32_t ty, uint32_t seq)
+    {
+      auto it = owner.reliable_tx.find(reliable_key(side_id, ty));
+      if (it == owner.reliable_tx.end())
+      {
+        return;
+      }
+      if (auto sent = it->second.sent.find(seq); sent != it->second.sent.end())
+      {
+        sent->second.partial_acked = true;
       }
     }
 
@@ -215,17 +247,19 @@ namespace seds
       {
         return;
       }
-      if (!it->second.inflight_bytes.has_value() || it->second.inflight_seq != seq)
+      const auto sent = it->second.sent.find(seq);
+      if (sent == it->second.sent.end())
       {
         return;
       }
-      const auto & bytes = *it->second.inflight_bytes;
       auto & side = owner.sides[side_id];
       if (side.serialized_tx != nullptr)
       {
-        static_cast<void>(side.serialized_tx(bytes.data(), bytes.size(), side.user));
-        owner.reliable_tx[key].last_send_ms = owner.now_ms();
-        owner.reliable_tx[key].retries++;
+        static_cast<void>(call_serialized_tx(owner, side, sent->second.bytes));
+        sent->second.last_send_ms = owner.now_ms();
+        sent->second.retries++;
+        sent->second.queued = false;
+        sent->second.partial_acked = false;
       }
     }
 
@@ -273,7 +307,28 @@ namespace seds
     }
 
     template<typename OwnerT>
-    bool process_reliable_ingress_impl(OwnerT & owner, int32_t side_id, const FrameInfoLite & frame)
+    void queue_reliable_partial_ack(OwnerT & owner, const int32_t side_id, const uint32_t ty, const uint32_t seq)
+    {
+      if (side_id < 0 || static_cast<size_t>(side_id) >= owner.sides.size())
+      {
+        return;
+      }
+      const auto & side = owner.sides[side_id];
+      if (!side.reliable_enabled || side.serialized_tx == nullptr)
+      {
+        return;
+      }
+      enqueue_tx_front(owner.tx_queue, owner.tx_queue_bytes,
+                       {
+                         make_reliable_control_packet(SEDS_DT_RELIABLE_PARTIAL_ACK, ty, seq, owner.now_ms(),
+                                                      control_sender(owner)),
+                         std::nullopt, side_id, false
+                       });
+    }
+
+    template<typename OwnerT>
+    bool process_reliable_ingress_impl(OwnerT & owner, int32_t side_id, const FrameInfoLite & frame,
+                                       const PacketData & pkt, std::span<const uint8_t> wire_bytes)
     {
       if (!frame.reliable.has_value())
       {
@@ -304,6 +359,11 @@ namespace seds
 
       if (hdr.seq > rx.expected_seq)
       {
+        if (rx.buffered.size() < kReliableMaxPending)
+        {
+          rx.buffered.emplace(hdr.seq, ReliableRxState::Buffered{pkt, {wire_bytes.begin(), wire_bytes.end()}});
+        }
+        queue_reliable_partial_ack(owner, side_id, frame.envelope.ty, hdr.seq);
         queue_reliable_packet_request(owner, side_id, frame.envelope.ty, rx.expected_seq);
         return false;
       }
@@ -316,7 +376,20 @@ namespace seds
       }
       rx.expected_seq = next;
       rx.last_ack = ack;
-      queue_reliable_ack(owner, side_id, frame.envelope.ty, ack);
+      while (true)
+      {
+        auto buffered = rx.buffered.extract(rx.expected_seq);
+        if (buffered.empty())
+        {
+          break;
+        }
+        owner.reliable_released_rx.push_back(
+          {std::move(buffered.mapped().pkt), side_id, std::move(buffered.mapped().wire_bytes)});
+        rx.last_ack = rx.expected_seq;
+        const uint32_t after = rx.expected_seq + 1;
+        rx.expected_seq = after == 0 ? 1 : after;
+      }
+      queue_reliable_ack(owner, side_id, frame.envelope.ty, rx.last_ack);
       return true;
     }
 
@@ -331,22 +404,29 @@ namespace seds
       if (!side.reliable_enabled || !is_reliable_type(pkt.ty))
       {
         auto bytes = serialize_packet(pkt);
-        return side.serialized_tx(bytes.data(), bytes.size(), side.user);
+        return call_serialized_tx(owner, side, bytes);
       }
       auto key = reliable_key(side_id, pkt.ty);
       auto & tx = owner.reliable_tx[key];
-      if (tx.inflight_bytes.has_value())
+      if (tx.sent.size() >= kReliableMaxPending)
       {
-        tx.pending.push_back(pkt);
-        return SEDS_OK;
+        return SEDS_PACKET_TOO_LARGE;
       }
       const uint8_t flags = kTypeInfo[pkt.ty].reliable_mode == ReliableMode::Unordered ? kReliableFlagUnordered : 0u;
       auto bytes = serialize_packet_with_reliable(pkt, ReliableHeaderLite{flags, tx.next_seq, 0u});
-      tx.inflight_seq = tx.next_seq++;
-      tx.last_send_ms = owner.now_ms();
-      tx.retries = 0;
-      tx.inflight_bytes = bytes;
-      return side.serialized_tx(bytes.data(), bytes.size(), side.user);
+      const uint32_t seq = tx.next_seq++;
+      if (tx.next_seq == 0)
+      {
+        tx.next_seq = 1;
+      }
+      const auto rc = call_serialized_tx(owner, side, bytes);
+      if (rc != SEDS_OK)
+      {
+        return rc;
+      }
+      tx.sent_order.push_back(seq);
+      tx.sent.emplace(seq, ReliableTxState::Sent{std::move(bytes), owner.now_ms(), 0, false, false});
+      return SEDS_OK;
     }
 
     template<typename OwnerT>
@@ -355,27 +435,6 @@ namespace seds
       const uint64_t now = owner.now_ms();
       for (auto & [key, tx]: owner.reliable_tx)
       {
-        if (!tx.inflight_bytes.has_value())
-        {
-          continue;
-        }
-        if (now - tx.last_send_ms < 200)
-        {
-          continue;
-        }
-        if (tx.retries >= 8)
-        {
-          tx.inflight_bytes.reset();
-          tx.retries = 0;
-          if (!tx.pending.empty())
-          {
-            const auto side_id = static_cast<int32_t>(key >> 32u);
-            auto next = std::move(tx.pending.front());
-            tx.pending.pop_front();
-            enqueue_tx_front(owner.tx_queue, owner.tx_queue_bytes, {std::move(next), std::nullopt, side_id, false});
-          }
-          continue;
-        }
         const auto side_id = static_cast<int32_t>(key >> 32u);
         if (side_id < 0 || static_cast<size_t>(side_id) >= owner.sides.size())
         {
@@ -386,9 +445,28 @@ namespace seds
         {
           continue;
         }
-        side.serialized_tx(tx.inflight_bytes->data(), tx.inflight_bytes->size(), side.user);
-        tx.last_send_ms = now;
-        tx.retries++;
+        const auto seqs = std::vector<uint32_t>(tx.sent_order.begin(), tx.sent_order.end());
+        for (const uint32_t seq: seqs)
+        {
+          auto sent = tx.sent.find(seq);
+          if (sent == tx.sent.end() || sent->second.queued || sent->second.partial_acked ||
+              now - sent->second.last_send_ms < kReliableRetransmitMs)
+          {
+            continue;
+          }
+          if (sent->second.retries >= kReliableMaxRetries)
+          {
+            tx.sent.erase(sent);
+            std::erase(tx.sent_order, seq);
+            continue;
+          }
+          const auto rc = call_serialized_tx(owner, side, sent->second.bytes);
+          if (rc == SEDS_OK)
+          {
+            sent->second.last_send_ms = now;
+            sent->second.retries++;
+          }
+        }
       }
     }
   } // namespace
@@ -786,8 +864,11 @@ namespace seds
         if (side.reliable_enabled && side.serialized_tx != nullptr)
         {
           const auto pending = expected_end_to_end_destinations(owner, item.pkt);
-          owner.end_to_end_reliable_tx[packet_id(item.pkt)] =
-              EndToEndReliableSent{item.pkt, pending, !pending.empty(), owner.now_ms(), 0, false};
+          if (!pending.empty())
+          {
+            owner.end_to_end_reliable_tx[packet_id(item.pkt)] =
+                EndToEndReliableSent{item.pkt, pending, true, owner.now_ms(), 0, false};
+          }
           break;
         }
       }
@@ -811,6 +892,11 @@ namespace seds
         const auto rc = send_serialized_with_reliable(owner, side_id, item.pkt);
         if (rc != SEDS_OK)
         {
+          if (rc == SEDS_IO && owner.side_tx_deferred)
+          {
+            owner.side_tx_deferred = false;
+            return SEDS_IO;
+          }
           had_failure = true;
           if (item.pkt.ty != SEDS_DT_TELEMETRY_ERROR)
           {
@@ -861,6 +947,11 @@ namespace seds
         const auto rc = send_serialized_with_reliable(owner, side_id, item.pkt);
         if (rc != SEDS_OK)
         {
+          if (rc == SEDS_IO && owner.side_tx_deferred)
+          {
+            owner.side_tx_deferred = false;
+            return SEDS_IO;
+          }
           return SEDS_HANDLER_ERROR;
         }
       }
@@ -905,7 +996,8 @@ namespace seds
     {
       note_reliable_return_route(r, *src_side, id);
     }
-    if (pkt.ty == SEDS_DT_RELIABLE_ACK || pkt.ty == SEDS_DT_RELIABLE_PACKET_REQUEST)
+    if (pkt.ty == SEDS_DT_RELIABLE_ACK || pkt.ty == SEDS_DT_RELIABLE_PARTIAL_ACK ||
+        pkt.ty == SEDS_DT_RELIABLE_PACKET_REQUEST)
     {
       if (pkt.ty == SEDS_DT_RELIABLE_ACK && is_end_to_end_ack_sender(pkt.sender) &&
           pkt.payload.size() == sizeof(uint64_t))
@@ -938,6 +1030,10 @@ namespace seds
         if (pkt.ty == SEDS_DT_RELIABLE_ACK)
         {
           handle_ack_impl(r, *src_side, ty, seq);
+        }
+        else if (pkt.ty == SEDS_DT_RELIABLE_PARTIAL_ACK)
+        {
+          handle_partial_ack_impl(r, *src_side, ty, seq);
         }
         else
         {
@@ -985,7 +1081,8 @@ namespace seds
     {
       note_reliable_return_route(relay, *src_side, id);
     }
-    if (pkt.ty == SEDS_DT_RELIABLE_ACK || pkt.ty == SEDS_DT_RELIABLE_PACKET_REQUEST)
+    if (pkt.ty == SEDS_DT_RELIABLE_ACK || pkt.ty == SEDS_DT_RELIABLE_PARTIAL_ACK ||
+        pkt.ty == SEDS_DT_RELIABLE_PACKET_REQUEST)
     {
       if (pkt.ty == SEDS_DT_RELIABLE_ACK && is_end_to_end_ack_sender(pkt.sender) &&
           pkt.payload.size() == sizeof(uint64_t))
@@ -1012,6 +1109,10 @@ namespace seds
         if (pkt.ty == SEDS_DT_RELIABLE_ACK)
         {
           handle_ack_impl(relay, *src_side, ty, seq);
+        }
+        else if (pkt.ty == SEDS_DT_RELIABLE_PARTIAL_ACK)
+        {
+          handle_partial_ack_impl(relay, *src_side, ty, seq);
         }
         else
         {
@@ -1096,13 +1197,15 @@ namespace seds
     handle_ack_impl(r, side_id, ty, ack);
   }
 
-  bool process_reliable_ingress(SedsRouter & r, int32_t side_id, const FrameInfoLite & frame)
+  bool process_reliable_ingress(SedsRouter & r, int32_t side_id, const FrameInfoLite & frame, const PacketData & pkt,
+                                std::span<const uint8_t> wire_bytes)
   {
-    return process_reliable_ingress_impl(r, side_id, frame);
+    return process_reliable_ingress_impl(r, side_id, frame, pkt, wire_bytes);
   }
 
-  bool process_reliable_ingress(SedsRelay & r, int32_t side_id, const FrameInfoLite & frame)
+  bool process_reliable_ingress(SedsRelay & r, int32_t side_id, const FrameInfoLite & frame, const PacketData & pkt,
+                                std::span<const uint8_t> wire_bytes)
   {
-    return process_reliable_ingress_impl(r, side_id, frame);
+    return process_reliable_ingress_impl(r, side_id, frame, pkt, wire_bytes);
   }
 } // namespace seds
