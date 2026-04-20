@@ -144,6 +144,8 @@ ERROR_TYPE = {
     "name": "TELEMETRY_ERROR",
     "doc": "Built-in TelemetryError",
     "class": "Error",
+    "priority": 200,
+    "reliable_mode": "Ordered",
     "element": {"kind": "Dynamic", "data_type": "String"},
     "endpoints": ["TelemetryError"],
 }
@@ -296,15 +298,15 @@ def finalize_schema(base: dict, *, ipc_schema: Path | None, timesync_enabled: bo
     validate_schema(base, timesync_enabled=timesync_enabled, discovery_enabled=discovery_enabled)
     if ipc_schema is not None:
         base = merge_ipc_overlay(base, load_schema(ipc_schema))
-    base["endpoints"].append(ERROR_ENDPOINT)
-    base["types"].append(ERROR_TYPE)
-    base["types"].extend(RELIABLE_CONTROL_TYPES)
     if timesync_enabled:
         base["endpoints"].append(TIMESYNC_ENDPOINT)
         base["types"].extend(TIMESYNC_TYPES)
     if discovery_enabled:
         base["endpoints"].append(DISCOVERY_ENDPOINT)
         base["types"].extend(DISCOVERY_TYPES)
+    base["endpoints"].append(ERROR_ENDPOINT)
+    base["types"].extend(RELIABLE_CONTROL_TYPES)
+    base["types"].append(ERROR_TYPE)
     return base
 
 
@@ -422,7 +424,7 @@ def render_generated_schema(cfg: dict) -> str:
     endpoint_index = {ep["rust"]: i for i, ep in enumerate(cfg["endpoints"])}
     lines: list[str] = []
     lines.append("#pragma once")
-    lines.append('#include "src/internal.hpp"')
+    lines.append('#include "internal.hpp"')
     lines.append("")
     lines.append("namespace seds::generated {")
     lines.append(f"inline constexpr uint32_t kEndpointCountValue = {len(cfg['endpoints'])}u;")

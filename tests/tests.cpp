@@ -1,6 +1,6 @@
 #include "sedsprintf.h"
-#include "src/internal.hpp"
-#include "src/router.hpp"
+#include "internal.hpp"
+#include "router.hpp"
 
 #include <algorithm>
 #include <atomic>

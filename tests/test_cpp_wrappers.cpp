@@ -1,13 +1,13 @@
-#include "src/c_api.hpp"
-#include "src/discovery_helpers.hpp"
-#include "src/config.hpp"
-#include "src/macros.hpp"
-#include "src/packet.hpp"
-#include "src/queue.hpp"
-#include "src/relay.hpp"
-#include "src/router.hpp"
-#include "src/small_payload.hpp"
-#include "src/timesync.hpp"
+#include "c_api.hpp"
+#include "discovery_helpers.hpp"
+#include "config.hpp"
+#include "macros.hpp"
+#include "packet.hpp"
+#include "queue.hpp"
+#include "relay.hpp"
+#include "router.hpp"
+#include "small_payload.hpp"
+#include "timesync.hpp"
 
 #include <gtest/gtest.h>
 

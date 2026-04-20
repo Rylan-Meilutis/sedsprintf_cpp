@@ -53,29 +53,67 @@ namespace seds
     return ~crc;
   }
 
-  uint64_t packet_id(const PacketData & pkt)
+  uint64_t hash_bytes_u64(uint64_t h, const uint8_t * data, const size_t len)
   {
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&](const uint8_t * data, size_t len)
+    constexpr uint64_t kPrime = 0x9E3779B1ull;
+    for (size_t i = 0; i < len; ++i)
     {
-      for (size_t i = 0; i < len; ++i)
-      {
-        h ^= data[i];
-        h *= 1099511628211ull;
-      }
-    };
-    mix(reinterpret_cast<const uint8_t *>(pkt.sender.data()), pkt.sender.size());
-    mix(reinterpret_cast<const uint8_t *>(&pkt.ty), sizeof(pkt.ty));
-    for (uint32_t ep: pkt.endpoints)
-    {
-      mix(reinterpret_cast<const uint8_t *>(&ep), sizeof(ep));
-    }
-    mix(reinterpret_cast<const uint8_t *>(&pkt.timestamp), sizeof(pkt.timestamp));
-    if (!pkt.payload.empty())
-    {
-      mix(pkt.payload.data(), pkt.payload.size());
+      h ^= static_cast<uint64_t>(data[i]);
+      h *= kPrime;
+      h ^= h >> 27u;
     }
     return h;
+  }
+
+  uint64_t hash_string(uint64_t h, const std::string_view value)
+  {
+    return hash_bytes_u64(h, reinterpret_cast<const uint8_t *>(value.data()), value.size());
+  }
+
+  uint64_t packet_id_with_endpoints(const PacketData & pkt, const std::vector<uint32_t> & endpoints)
+  {
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    h = hash_string(h, pkt.sender);
+    h = hash_string(h, pkt.ty < kTypeInfo.size() ? kTypeInfo[pkt.ty].name : std::to_string(pkt.ty));
+    for (const uint32_t ep: endpoints)
+    {
+      h = hash_string(h, ep < kEndpointNames.size() ? kEndpointNames[ep] : std::to_string(ep));
+    }
+    h = hash_bytes_u64(h, reinterpret_cast<const uint8_t *>(&pkt.timestamp), sizeof(pkt.timestamp));
+    const uint64_t data_size = pkt.payload.size();
+    h = hash_bytes_u64(h, reinterpret_cast<const uint8_t *>(&data_size), sizeof(data_size));
+    h = hash_bytes_u64(h, pkt.payload.data(), pkt.payload.size());
+    return h;
+  }
+
+  uint64_t packet_id(const PacketData & pkt)
+  {
+    return packet_id_with_endpoints(pkt, pkt.endpoints);
+  }
+
+  uint64_t source_packet_id(const PacketData & pkt)
+  {
+    if (pkt.ty >= kTypeInfo.size())
+    {
+      return packet_id(pkt);
+    }
+    std::vector<uint32_t> endpoints;
+    endpoints.reserve(pkt.endpoints.size());
+    for (const uint32_t ep: kTypeInfo[pkt.ty].endpoints)
+    {
+      if (std::ranges::find(pkt.endpoints, ep) != pkt.endpoints.end())
+      {
+        endpoints.push_back(ep);
+      }
+    }
+    for (const uint32_t ep: pkt.endpoints)
+    {
+      if (std::ranges::find(endpoints, ep) == endpoints.end())
+      {
+        endpoints.push_back(ep);
+      }
+    }
+    return packet_id_with_endpoints(pkt, endpoints);
   }
 
   uint64_t sender_hash(const std::string_view sender)

@@ -11,7 +11,8 @@ def run(cmd: list[str], cwd: Path) -> None:
 
 
 def configure_build(root: Path, build_dir: Path, *, schema: Path | None = None, ipc_schema: Path | None = None,
-                    timesync: bool | None = None, discovery: bool | None = None) -> None:
+                    timesync: bool | None = None, discovery: bool | None = None,
+                    c_header_dir: Path | None = None) -> None:
     cmd = [
         "cmake",
         "-S",
@@ -28,6 +29,8 @@ def configure_build(root: Path, build_dir: Path, *, schema: Path | None = None, 
         cmd.append(f"-DSEDSPRINTF_ENABLE_TIMESYNC={'ON' if timesync else 'OFF'}")
     if discovery is not None:
         cmd.append(f"-DSEDSPRINTF_ENABLE_DISCOVERY={'ON' if discovery else 'OFF'}")
+    if c_header_dir is not None:
+        cmd.append(f"-DSEDSPRINTF_C_HEADER_DIR={c_header_dir}")
     run(cmd, root)
 
 
@@ -42,10 +45,11 @@ def main() -> int:
     build_root.mkdir(parents=True, exist_ok=True)
 
     tmp_build = Path(tempfile.mkdtemp(prefix="codegen_check_", dir=build_root))
-    configure_build(root, tmp_build)
+    tmp_header_dir = tmp_build / "C-Headers"
+    configure_build(root, tmp_build, c_header_dir=tmp_header_dir)
     build_target(root, tmp_build, "sedsprintf_codegen")
-    header = tmp_build / "generated" / "sedsprintf.h"
-    schema = tmp_build / "generated" / "generated_schema.hpp"
+    header = tmp_header_dir / "sedsprintf.h"
+    schema = tmp_build / "Cpp-Headers" / "generated_schema.hpp"
     assert header.exists(), header
     assert schema.exists(), schema
     htxt = header.read_text(encoding="utf-8")
@@ -59,18 +63,21 @@ def main() -> int:
 
     override_schema = fixtures / "codegen_override_schema.json"
     override_build = Path(tempfile.mkdtemp(prefix="codegen_override_", dir=build_root))
-    configure_build(root, override_build, schema=override_schema)
+    override_header_dir = override_build / "C-Headers"
+    configure_build(root, override_build, schema=override_schema, c_header_dir=override_header_dir)
     build_target(root, override_build, "sedsprintf_codegen")
-    override_header = (override_build / "generated" / "sedsprintf.h").read_text(encoding="utf-8")
+    override_header = (override_header_dir / "sedsprintf.h").read_text(encoding="utf-8")
     assert "SEDS_DT_CUSTOM_DATA" in override_header
     assert "SEDS_DT_GPS_DATA" not in override_header
 
     ipc_overlay = fixtures / "codegen_ipc_overlay.json"
     overlay_build = Path(tempfile.mkdtemp(prefix="codegen_overlay_", dir=build_root))
-    configure_build(root, overlay_build, ipc_schema=ipc_overlay, timesync=False, discovery=False)
+    overlay_header_dir = overlay_build / "C-Headers"
+    configure_build(root, overlay_build, ipc_schema=ipc_overlay, timesync=False, discovery=False,
+                    c_header_dir=overlay_header_dir)
     build_target(root, overlay_build, "sedsprintf_codegen")
-    overlay_header = (overlay_build / "generated" / "sedsprintf.h").read_text(encoding="utf-8")
-    overlay_schema = (overlay_build / "generated" / "generated_schema.hpp").read_text(encoding="utf-8")
+    overlay_header = (overlay_header_dir / "sedsprintf.h").read_text(encoding="utf-8")
+    overlay_schema = (overlay_build / "Cpp-Headers" / "generated_schema.hpp").read_text(encoding="utf-8")
     assert "SEDS_EP_BOARD_LOCAL" in overlay_header
     assert "SEDS_DT_BOARD_LOCAL_FRAME" in overlay_header
     assert "SEDS_DT_TIME_SYNC_ANNOUNCE" not in overlay_header

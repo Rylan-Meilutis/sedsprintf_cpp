@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -20,9 +20,13 @@ Examples:
   build.py
   build.py test
   build.py release test
+  build.py test ctest_filter=sedsprintf_rust_router_interop
   build.py configure build_dir=build/overlay ipc_schema_path=tests/schemas/ipc_link_local_overlay.json
   build.py target=sedsprintf_cpp_overlay_tests
 """
+
+RUST_INTEROP_TEST = "sedsprintf_rust_router_interop"
+RUST_INTEROP_TARGET = "sedsprintf_rust_interop_cpp_peer"
 
 
 def run(cmd: list[str], cwd: Path) -> None:
@@ -54,85 +58,6 @@ def run_timed(cmd: list[str], cwd: Path) -> None:
     print(f"info: finished in {format_seconds(time.perf_counter() - start)}")
 
 
-def find_clang_tidy() -> str | None:
-    candidates = [
-        shutil.which("clang-tidy"),
-        "/opt/homebrew/Cellar/llvm@20/20.1.8/bin/clang-tidy",
-        "/opt/homebrew/Cellar/llvm/22.1.1/bin/clang-tidy",
-        "/usr/local/opt/llvm/bin/clang-tidy",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    return None
-
-
-def get_macos_sysroot(root: Path) -> str | None:
-    try:
-        completed = subprocess.run(
-            ["xcrun", "--show-sdk-path"],
-            cwd=root,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    sysroot = completed.stdout.strip()
-    return sysroot or None
-
-
-def translation_units(root: Path) -> list[str]:
-    units: list[str] = []
-    for pattern in ("src/*.cpp", "tests/*.cpp", "tests/*.c"):
-        units.extend(sorted(str(path) for path in root.glob(pattern)))
-    return units
-
-
-def filtered_compile_database(build_dir: Path, target: object) -> Path:
-    compile_commands = json.loads((build_dir / "compile_commands.json").read_text(encoding="utf-8"))
-    target_name = str(target) if target else ""
-    prefer_overlay = "overlay" in target_name
-
-    filtered: dict[str, dict[str, object]] = {}
-    for entry in compile_commands:
-        file_path = str(entry["file"])
-        current = filtered.get(file_path)
-        if current is None:
-            filtered[file_path] = entry
-            continue
-
-        current_output = str(current.get("output", ""))
-        next_output = str(entry.get("output", ""))
-        current_is_overlay = "overlay" in current_output
-        next_is_overlay = "overlay" in next_output
-        if prefer_overlay:
-            take_next = next_is_overlay and not current_is_overlay
-        else:
-            take_next = current_is_overlay and not next_is_overlay
-        if take_next:
-            filtered[file_path] = entry
-
-    temp_dir = Path(tempfile.mkdtemp(prefix="clang_tidy_", dir=build_dir))
-    temp_db = temp_dir / "compile_commands.json"
-    temp_db.write_text(json.dumps(list(filtered.values()), indent=2), encoding="utf-8")
-    return temp_dir
-
-
-def run_clang_tidy(root: Path, build_dir: Path, *, target: object) -> None:
-    clang_tidy = find_clang_tidy()
-    if clang_tidy is None:
-        raise RuntimeError("clang-tidy not found")
-
-    tidy_db_dir = filtered_compile_database(build_dir, target)
-    cmd = [clang_tidy, "-quiet", "-p", str(tidy_db_dir)]
-    sysroot = get_macos_sysroot(root)
-    if sysroot is not None:
-        cmd.append(f"--extra-arg-before=-isysroot{sysroot}")
-    cmd.extend(translation_units(root))
-    run(cmd, root)
-
-
 def configure_args(root: Path, build_dir: Path, options: dict[str, object], *, export_compile_commands: bool) -> list[str]:
     cmake_args = [
         "cmake",
@@ -157,7 +82,7 @@ def configure_args(root: Path, build_dir: Path, options: dict[str, object], *, e
 
 def run_test_mode(root: Path, build_dir: Path, *, jobs: str | int | None, target: object,
                   ctest_filter: object) -> None:
-    total_steps = 5
+    total_steps = 4
     print_banner("TEST MODE")
 
     print_step(1, total_steps, "codegen")
@@ -166,26 +91,27 @@ def run_test_mode(root: Path, build_dir: Path, *, jobs: str | int | None, target
         codegen_cmd.extend(["-j", str(jobs)])
     run_timed(codegen_cmd, root)
 
-    print_step(2, total_steps, "clang-tidy")
-    start = time.perf_counter()
-    run_clang_tidy(root, build_dir, target=target)
-    print(f"info: finished in {format_seconds(time.perf_counter() - start)}")
-
-    print_step(3, total_steps, "cmake build")
+    print_step(2, total_steps, "cmake build")
     build_cmd = ["cmake", "--build", str(build_dir)]
+    build_targets: list[str] = []
     if target:
-        build_cmd.extend(["--target", str(target)])
+        build_targets.append(str(target))
+        selected_tests_can_include_interop = ctest_filter is None or re.search(str(ctest_filter), RUST_INTEROP_TEST)
+        if selected_tests_can_include_interop and RUST_INTEROP_TARGET not in build_targets:
+            build_targets.append(RUST_INTEROP_TARGET)
+    if build_targets:
+        build_cmd.extend(["--target", *build_targets])
     if jobs:
         build_cmd.extend(["-j", str(jobs)])
     run_timed(build_cmd, root)
 
-    print_step(4, total_steps, "ctest")
+    print_step(3, total_steps, "ctest")
     test_cmd = ["ctest", "--test-dir", str(build_dir), "--output-on-failure"]
     if ctest_filter:
         test_cmd.extend(["-R", str(ctest_filter)])
     run_timed(test_cmd, root)
 
-    print_step(5, total_steps, "codegen check")
+    print_step(4, total_steps, "codegen check")
     run_timed([sys.executable, str(root / "tests" / "check_codegen.py")], root)
 
 

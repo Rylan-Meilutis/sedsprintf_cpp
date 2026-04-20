@@ -325,6 +325,8 @@ namespace seds
 
   uint64_t packet_id(const PacketData & pkt);
 
+  uint64_t source_packet_id(const PacketData & pkt);
+
   bool packet_from_view(const SedsPacketView * view, PacketData & out);
 
   void fill_view(const PacketData & pkt, SedsPacketView & view);

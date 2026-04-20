@@ -326,6 +326,27 @@ namespace seds
                        });
     }
 
+    void queue_end_to_end_ack(SedsRouter & r, const PacketData & pkt, std::optional<int32_t> src_side)
+    {
+      const auto sender = encode_end_to_end_ack_sender(r);
+      enqueue_tx_front(r.tx_queue, r.tx_queue_bytes,
+                       {
+                         make_e2e_reliable_ack_packet(packet_id(pkt), r.now_ms(), sender),
+                         std::nullopt, src_side, false
+                       });
+      const uint64_t source_id = source_packet_id(pkt);
+      // Rust source routers may track multi-endpoint packets in schema endpoint order, while
+      // relays route ACKs by the wire-decoded endpoint order. Emit both IDs when they differ.
+      if (source_id != packet_id(pkt))
+      {
+        enqueue_tx_front(r.tx_queue, r.tx_queue_bytes,
+                         {
+                           make_e2e_reliable_ack_packet(source_id, r.now_ms(), sender),
+                           std::nullopt, src_side, false
+                         });
+      }
+    }
+
     template<typename OwnerT>
     bool process_reliable_ingress_impl(OwnerT & owner, int32_t side_id, const FrameInfoLite & frame,
                                        const PacketData & pkt, std::span<const uint8_t> wire_bytes)
@@ -982,11 +1003,7 @@ namespace seds
             });
         if (has_local_handler)
         {
-          enqueue_tx_front(r.tx_queue, r.tx_queue_bytes,
-                           {
-                             make_e2e_reliable_ack_packet(id, r.now_ms(), encode_end_to_end_ack_sender(r)),
-                             std::nullopt, src_side, false
-                           });
+          queue_end_to_end_ack(r, pkt, src_side);
         }
       }
       return;
@@ -995,6 +1012,11 @@ namespace seds
     if (src_side && is_reliable_type(pkt.ty) && !is_internal_control_type(pkt.ty))
     {
       note_reliable_return_route(r, *src_side, id);
+      const uint64_t source_id = source_packet_id(pkt);
+      if (source_id != id)
+      {
+        note_reliable_return_route(r, *src_side, source_id);
+      }
     }
     if (pkt.ty == SEDS_DT_RELIABLE_ACK || pkt.ty == SEDS_DT_RELIABLE_PARTIAL_ACK ||
         pkt.ty == SEDS_DT_RELIABLE_PACKET_REQUEST)
@@ -1062,11 +1084,7 @@ namespace seds
     static_cast<void>(dispatch_local_packet_handlers(pkt, r.locals));
     if (src_side && had_local_handler && is_reliable_type(pkt.ty))
     {
-      enqueue_tx_front(r.tx_queue, r.tx_queue_bytes,
-                       {
-                         make_e2e_reliable_ack_packet(id, r.now_ms(), encode_end_to_end_ack_sender(r)), std::nullopt,
-                         src_side, false
-                       });
+      queue_end_to_end_ack(r, pkt, src_side);
     }
     if (src_side && r.mode == Seds_RM_Relay)
     {
@@ -1080,6 +1098,11 @@ namespace seds
     if (src_side && is_reliable_type(pkt.ty) && !is_internal_control_type(pkt.ty))
     {
       note_reliable_return_route(relay, *src_side, id);
+      const uint64_t source_id = source_packet_id(pkt);
+      if (source_id != id)
+      {
+        note_reliable_return_route(relay, *src_side, source_id);
+      }
     }
     if (pkt.ty == SEDS_DT_RELIABLE_ACK || pkt.ty == SEDS_DT_RELIABLE_PARTIAL_ACK ||
         pkt.ty == SEDS_DT_RELIABLE_PACKET_REQUEST)

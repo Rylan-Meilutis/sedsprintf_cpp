@@ -1,5 +1,5 @@
 #include "sedsprintf.h"
-#include "src/internal.hpp"
+#include "internal.hpp"
 
 #include <gtest/gtest.h>
 
